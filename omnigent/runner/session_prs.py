@@ -100,11 +100,17 @@ class SessionPrRegistry:
         return state
 
     def list(self) -> list[SessionPullRequest]:
-        """Read a locked snapshot; corruption is reported without overwriting it."""
+        """Keep explicit activity first; later discovery must not change the default PR."""
         if not self.path.parent.exists():
             return []
         with FileLock(str(self.path) + ".lock", timeout=1):
-            return sorted(self._read().prs, key=lambda pr: pr.last_seen_at, reverse=True)
+            return sorted(
+                self._read().prs,
+                key=lambda pr: (
+                    pr.relationship == "inferred",
+                    pr.first_seen_at if pr.relationship == "inferred" else -pr.last_seen_at,
+                ),
+            )
 
     def _write(self, state: _Registry) -> None:
         foreign = [pr for pr in state.prs if pr.provider != "github"]
