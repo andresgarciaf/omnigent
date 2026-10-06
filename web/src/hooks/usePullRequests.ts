@@ -214,6 +214,13 @@ const GITHUB_CAPABILITIES: PullRequestCapabilities = {
 export function normalizePullRequestInfo(raw: PullRequestInfo): NormalizedPullRequestInfo {
   return {
     ...raw,
+    // Older hosts can leave a removed branch PR selected despite an empty registry.
+    ...(raw.tracking_available &&
+    raw.prs &&
+    raw.selected_pr_url &&
+    !raw.prs.some((pr) => pr.url === raw.selected_pr_url)
+      ? { selected_pr_url: undefined }
+      : {}),
     provider: raw.provider === undefined ? "github" : raw.provider,
     auth: raw.auth ?? legacyPullRequestAuth(raw),
     capabilities: raw.capabilities ?? GITHUB_CAPABILITIES,
@@ -590,7 +597,7 @@ export function useUpdateSessionPr(conversationId: string) {
         },
       );
       if (!response.ok) throw await errorFromResponse(response);
-      return (await response.json()) as PullRequestInfo;
+      return normalizePullRequestInfo((await response.json()) as PullRequestInfo);
     },
     onSuccess: async (info, body) => {
       await queryClient.cancelQueries({ queryKey: ["github-info", conversationId] });
