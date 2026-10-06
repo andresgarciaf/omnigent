@@ -65,6 +65,12 @@ struct AppRootView: View {
                 }
               }
             }
+          },
+          serverURL: serverURL,
+          serverSignedOut: { signedOutURL, message in
+            settings.stopAutoOpening(oidcServer: signedOutURL)
+            guard isCurrentServer(serverURL) else { return }
+            mode = .setup(prefill: serverURL.absoluteString, error: message)
           }
         )
         .id(DatabricksWebContext.contextIdentity(for: serverURL))

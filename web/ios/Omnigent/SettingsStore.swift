@@ -43,6 +43,15 @@ final class SettingsStore: ObservableObject {
     serverURL = nil
   }
 
+  /// After signing out of an OIDC server, don't reconnect to it on relaunch. Its grant is per
+  /// origin, so any saved URL on that origin stops; recents stay for an explicit reconnect.
+  func stopAutoOpening(oidcServer url: URL) {
+    guard let saved = serverURL,
+      URL(string: saved)?.omnigentOriginIdentity == url.omnigentOriginIdentity
+    else { return }
+    serverURL = nil
+  }
+
   func rememberRecentServer(_ url: URL) {
     let value = url.absoluteString
     let deduped: [String] = [value] + recentServers.filter { $0 != value }

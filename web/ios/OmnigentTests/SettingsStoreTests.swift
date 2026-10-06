@@ -40,6 +40,28 @@ final class SettingsStoreTests: XCTestCase {
     XCTAssertFalse(store.isProtocolAllowed("vscode", from: "https://two.example.com"))
   }
 
+  func testOidcSignOutStopsAutoOpeningOnlyThatServer() {
+    let store = SettingsStore(defaults: defaults)
+    store.serverURL = "https://omnigent.example.com/omnigent"
+    store.rememberRecentServer(URL(string: "https://omnigent.example.com/omnigent")!)
+
+    store.stopAutoOpening(oidcServer: URL(string: "https://other.example.com")!)
+    XCTAssertEqual(store.serverURL, "https://omnigent.example.com/omnigent")
+
+    store.stopAutoOpening(oidcServer: URL(string: "https://OMNIGENT.example.com/omnigent/")!)
+    XCTAssertNil(store.serverURL)
+    XCTAssertEqual(store.recentServers, ["https://omnigent.example.com/omnigent"])
+  }
+
+  func testOidcSignOutStopsAutoOpeningAnIPv6Server() {
+    let store = SettingsStore(defaults: defaults)
+    store.serverURL = "http://[::1]:6767"
+    store.stopAutoOpening(oidcServer: URL(string: "http://[::1]:6768/")!)
+    XCTAssertEqual(store.serverURL, "http://[::1]:6767")
+    store.stopAutoOpening(oidcServer: URL(string: "http://[::1]:6767/omnigent/")!)
+    XCTAssertNil(store.serverURL)
+  }
+
   func testKnownServerURLMatchesByOrigin() {
     // A recorded server URL carries the workspace mount (/ml/omnigents); a deep
     // link matches by ORIGIN and reuses that recorded URL so the mount is
