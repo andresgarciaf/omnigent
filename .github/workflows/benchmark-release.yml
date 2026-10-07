@@ -205,8 +205,9 @@ jobs:
             --output-markdown ../comparison.md
           RC=$?
           set -e
-          # 1 means a regression; anything else means the comparison itself broke.
-          if [ "$RC" -gt 1 ]; then
+          # 1 with a report means a regression; anything else means the comparison
+          # itself broke (an uncaught exception also exits 1, but writes no report).
+          if [ "$RC" -gt 1 ] || { [ "$RC" -eq 1 ] && [ ! -s ../comparison.md ]; }; then
             echo "::error::compare.py failed (exit ${RC})."
             exit "$RC"
           fi
