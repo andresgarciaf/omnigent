@@ -1233,7 +1233,12 @@ def create_runner_app(
             if request.url.path == "/health":
                 return await call_next(request)
             client = request.scope.get("client")
-            if client is not None and client[0] == "tunnel":
+            # Proxy headers can rewrite ``client``; only the tunnel also sets ``server``.
+            if (
+                client is not None
+                and client[0] == "tunnel"
+                and request.scope.get("server") == ("runner", 0)
+            ):
                 return await call_next(request)
             auth_header = request.headers.get("authorization", "")
             if auth_header.startswith("Bearer "):

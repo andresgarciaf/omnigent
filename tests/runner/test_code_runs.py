@@ -552,3 +552,59 @@ async def test_code_run_routes_refuse_unauthenticated_calls_like_the_shell_route
             f"{base}/code-runs", headers={"Authorization": "Bearer runner-secret"}
         )
     assert listed.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_spoofed_tunnel_client_is_still_refused() -> None:
+    """``X-Forwarded-For: tunnel`` through a trusting proxy layer cannot skip the token.
+
+    uvicorn's default proxy-header handling trusts loopback and rewrites the
+    ASGI client from that header, so the client tuple alone cannot identify
+    tunnel traffic; the in-tunnel scope's server marker can, and only the
+    tunnel sets it.
+    """
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    app = create_runner_app(
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+        auth_token="runner-secret",
+    )
+    behind_proxy = ProxyHeadersMiddleware(app, trusted_hosts="127.0.0.1")  # type: ignore[arg-type]
+    transport = httpx.ASGITransport(
+        app=behind_proxy,  # type: ignore[arg-type]
+        client=("127.0.0.1", 5000),
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://runner") as client:
+        spoofed = await client.get(
+            f"/v1/sessions/{_SESSION}/code-runs", headers={"X-Forwarded-For": "tunnel"}
+        )
+    assert spoofed.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_an_in_tunnel_request_needs_no_bearer_token() -> None:
+    """A request the tunnel dispatches passes the token check without a bearer."""
+    from omnigent.runner.transports.ws_tunnel.frames import (
+        RequestFrame,
+        ResponseHeadFrame,
+        decode_frame,
+    )
+    from omnigent.runner.transports.ws_tunnel.serve import dispatch_via_asgi
+
+    app = create_runner_app(
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+        auth_token="runner-secret",
+    )
+    frames: list[object] = []
+
+    async def send_text(data: str) -> None:
+        frames.append(decode_frame(data))
+
+    await dispatch_via_asgi(
+        app,  # type: ignore[arg-type]
+        RequestFrame(id="req_1", method="GET", path=f"/v1/sessions/{_SESSION}/code-runs"),
+        send_text,
+    )
+
+    [head] = [frame for frame in frames if isinstance(frame, ResponseHeadFrame)]
+    assert head.status == 200
