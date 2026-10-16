@@ -1100,6 +1100,7 @@ _ITEM_TYPES: frozenset[str] = frozenset(
         "slash_command",
         "terminal_command",
         "routing_decision",
+        "code_run",
     }
 )
 
