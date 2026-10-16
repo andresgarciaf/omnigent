@@ -97,7 +97,8 @@ _FENCE_LANGUAGES = {
     "javascript": "node",
     "node": "node",
 }
-_FENCE_OPEN = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
+# Any indent: a fence inside a (nested) list item is indented past three spaces.
+_FENCE_OPEN = re.compile(r"^( *)(`{3,}|~{3,})(.*)$")
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,8 @@ def _fenced_blocks(text: str) -> list[tuple[str, str]]:
 
     Follows CommonMark fences: a run of at least three backticks or tildes
     opens a block, a run of the same character at least as long closes it,
-    and an unclosed block runs to the end of the text.
+    and an unclosed block runs to the end of the text. Fences may be indented
+    (list items); body lines lose up to the opening fence's indent.
     """
     blocks: list[tuple[str, str]] = []
     lines = _normalize_block_text(text).split("\n")
@@ -137,11 +139,7 @@ def _fenced_blocks(text: str) -> list[tuple[str, str]]:
             line = lines[index]
             index += 1
             closing = line.strip()
-            if (
-                len(line) - len(line.lstrip(" ")) <= 3
-                and closing.startswith(fence)
-                and closing == fence[0] * len(closing)
-            ):
+            if closing.startswith(fence) and closing == fence[0] * len(closing):
                 break
             body.append(line[min(indent, len(line) - len(line.lstrip(" "))) :])
         blocks.append((info, "\n".join(body)))

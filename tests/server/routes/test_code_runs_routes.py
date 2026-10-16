@@ -42,6 +42,10 @@ _CODE = "$ echo hi\n$ ls"
 _MESSAGE_TEXT = (
     f"Try this:\n\n```bash\n{_CODE}\n```\n\nand this:\n\n```console\n$ pwd\n/tmp\n```\n"
     "\nThen:\n\n~~~python title=demo\nprint(1)\n~~~\n\n```\n$ make\n```\n"
+    "\n1. Steps:\n\n   ```bash\n   $ echo a\n   $ echo b\n   ```\n"
+    "\n- Outer\n  - Inner:\n\n      ```python\n      print(2)\n      ```\n"
+    "\n~~~~bash\ncat <<'EOF'\n```\nx\n```\nEOF\n~~~~\n"
+    "\n````markdown\n```bash\n$ echo nested\n```\n````\n"
 )
 
 
@@ -301,6 +305,10 @@ def test_derive_code_run_command(language: str, code: str, console: bool, expect
         ("$ pwd\n/tmp", "shell", ("shell", True)),
         ("print(1)", "python", ("python", False)),
         ("$ make", "shell", ("shell", False)),
+        ("$ echo a\n$ echo b", "shell", ("shell", False)),
+        ("print(2)", "python", ("python", False)),
+        ("cat <<'EOF'\n```\nx\n```\nEOF", "shell", ("shell", False)),
+        ("$ echo nested", "shell", None),
         ("$ pwd", "shell", None),
         ("$ echo hi", "shell", None),
         ("Try this:", "shell", None),
@@ -314,6 +322,10 @@ def test_derive_code_run_command(language: str, code: str, console: bool, expect
         "console",
         "tilde-python",
         "untagged-prompts",
+        "list-item",
+        "nested-list-item",
+        "outer-fence-with-inner-fences",
+        "fence-nested-inside-a-longer-fence",
         "console-prefix",
         "partial-fence",
         "prose",
