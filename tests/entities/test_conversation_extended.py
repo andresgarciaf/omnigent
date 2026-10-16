@@ -428,6 +428,20 @@ def test_code_run_phase_requires_its_fields() -> None:
         CodeRunData(run_id="run_1", phase="finished")
 
 
+@pytest.mark.parametrize("omitted", ["output", "truncated"])
+def test_code_run_finished_requires_output_and_truncated(omitted: str) -> None:
+    raw = _finished_run([])
+    del raw[omitted]
+    with pytest.raises(ValidationError, match=omitted):
+        CodeRunData.model_validate(raw)
+
+
+def test_code_run_finished_accepts_empty_output() -> None:
+    data = CodeRunData.model_validate(_finished_run([]))
+    assert data.output == []
+    assert data.truncated is False
+
+
 def test_code_run_rejects_unknown_status_and_stream() -> None:
     with pytest.raises(ValidationError):
         CodeRunData.model_validate({**_finished_run([]), "status": "crashed"})

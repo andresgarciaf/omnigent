@@ -692,8 +692,8 @@ class CodeRunData(BaseModel):
     status: Literal["exited", "stopped", "timed_out", "failed"] | None = None
     exit_code: int | None = None
     duration_ms: int | None = None
-    output: list[CodeRunOutputSegment] = Field(default_factory=list)
-    truncated: bool = False
+    output: list[CodeRunOutputSegment] | None = None
+    truncated: bool | None = None
 
     @model_validator(mode="after")
     def check_phase_fields_and_output_cap(self) -> CodeRunData:
@@ -709,14 +709,14 @@ class CodeRunData(BaseModel):
         ]
         if missing:
             raise ValueError(f"code_run {self.phase} item requires {', '.join(missing)}")
-        if sum(len(segment.text) for segment in self.output) > CODE_RUN_OUTPUT_MAX_CHARS:
+        if sum(len(segment.text) for segment in self.output or ()) > CODE_RUN_OUTPUT_MAX_CHARS:
             raise ValueError(f"code_run output exceeds {CODE_RUN_OUTPUT_MAX_CHARS} characters")
         return self
 
 
 _CODE_RUN_PHASE_FIELDS: dict[str, tuple[str, ...]] = {
     "started": ("message_id", "block_hash", "language", "command", "timeout", "started_at"),
-    "finished": ("status", "duration_ms"),
+    "finished": ("status", "duration_ms", "output", "truncated"),
 }
 
 

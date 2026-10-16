@@ -1082,6 +1082,7 @@ def test_extract_search_text_code_run_finished_indexes_output_start() -> None:
                     {"stream": "stdout", "text": "hello "},
                     {"stream": "stderr", "text": "x" * 5000},
                 ],
+                "truncated": False,
             },
         }
     )

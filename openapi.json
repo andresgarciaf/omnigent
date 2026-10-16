@@ -1256,12 +1256,19 @@
             "title": "Message Id"
           },
           "output": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CodeRunOutputSegment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "description": "Finished: output segments in arrival order, at most `CODE_RUN_OUTPUT_MAX_CHARS` characters in total.",
-            "items": {
-              "$ref": "#/components/schemas/CodeRunOutputSegment"
-            },
-            "title": "Output",
-            "type": "array"
+            "title": "Output"
           },
           "phase": {
             "description": "`\"started\"` or `\"finished\"`.",
@@ -1322,10 +1329,16 @@
             "title": "Timeout"
           },
           "truncated": {
-            "default": false,
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "description": "Finished: `True` when output was cut to the cap.",
-            "title": "Truncated",
-            "type": "boolean"
+            "title": "Truncated"
           }
         },
         "required": [
