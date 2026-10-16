@@ -84,10 +84,16 @@ class _ItemStore(_StubConversationStore):
         self, conversation_id: str, items: list[NewConversationItem]
     ) -> list[ConversationItem]:
         del conversation_id
-        self.appended.extend(items)
-        return [
-            ConversationItem(
-                id=item.stable_id or "ci_new",
+        persisted: list[ConversationItem] = []
+        for item in items:
+            # Like the real store, a known stable id returns the stored item.
+            existing = self.items.get(item.stable_id or "")
+            if existing is not None:
+                persisted.append(existing.model_copy(update={"deduplicated": True}))
+                continue
+            self.appended.append(item)
+            stored = ConversationItem(
+                id=item.stable_id or f"ci_{len(self.items)}",
                 type=item.type,
                 status="completed",
                 response_id=item.response_id,
@@ -95,8 +101,9 @@ class _ItemStore(_StubConversationStore):
                 data=item.data,
                 created_by=item.created_by,
             )
-            for item in items
-        ]
+            self.items[stored.id] = stored
+            persisted.append(stored)
+        return persisted
 
 
 class _RunnerClient:
@@ -108,6 +115,7 @@ class _RunnerClient:
         self.copy_on_write = False
         self.start_status = 202
         self.start_error: Exception | None = None
+        self.stop_error: Exception | None = None
         self.store: _ItemStore | None = None
         self.saved_before_post: list[list[str]] = []
 
@@ -134,6 +142,8 @@ class _RunnerClient:
             self.saved_before_post.append([_phase(item) for item in self.store.appended])
         if self.start_error is not None and not url.endswith("/stop"):
             raise self.start_error
+        if self.stop_error is not None and url.endswith("/stop"):
+            raise self.stop_error
         if url.endswith("/stop"):
             return httpx.Response(200, json={"stopped": True}, request=httpx.Request("POST", url))
         return httpx.Response(
@@ -451,11 +461,10 @@ async def test_the_runner_limit_still_reaches_the_client_as_429(
         (429, None, 429),
         (409, None, 409),
         (500, None, 502),
-        (202, httpx.ConnectError("runner down"), 502),
     ],
-    ids=["runner-limit", "runner-copy-on-write", "runner-error", "network"],
+    ids=["runner-limit", "runner-copy-on-write", "runner-error"],
 )
-async def test_a_failed_forward_saves_a_failed_finished_item(
+async def test_a_refused_forward_saves_a_failed_finished_item(
     client: httpx.AsyncClient,
     runner: _RunnerClient,
     policy: dict[str, Any],
@@ -977,3 +986,92 @@ async def test_stop_is_audited_with_its_outcome(
 
     assert response.status_code == 200
     assert audit == {"code_run_id": "run_9", "code_run_stopped": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "start_error",
+    [httpx.ConnectError("runner down"), httpx.ReadTimeout("no answer")],
+    ids=["connect-error", "read-timeout"],
+)
+@pytest.mark.parametrize("stop_fails", [False, True], ids=["stop-sent", "stop-fails"])
+async def test_an_ambiguous_forward_saves_no_finished_and_stops_the_run(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    store: _ItemStore,
+    published: list[dict[str, Any]],
+    start_error: Exception,
+    stop_fails: bool,
+) -> None:
+    """The run may have started, so no synthetic result; a best-effort stop ends it."""
+    runner.start_error = start_error
+    if stop_fails:
+        runner.stop_error = httpx.ConnectError("still down")
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert response.status_code == 502
+    [started] = store.appended
+    assert isinstance(started.data, CodeRunData) and started.data.phase == "started"
+    run_id = started.data.run_id
+    assert runner.calls[-1] == ("POST", f"{_RUNS}/{run_id}/stop", {})
+    assert [event["type"] for event in published] == ["session.code_run.started"]
+
+
+@pytest.mark.asyncio
+async def test_the_runners_real_finished_lands_after_an_ambiguous_forward(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    store: _ItemStore,
+    published: list[dict[str, Any]],
+) -> None:
+    """The runner's own finished post is saved, not deduped behind a synthetic one."""
+    from omnigent.entities.conversation import code_run_source_id
+    from omnigent.server.routes._sessions.orchestration import (
+        _persist_external_conversation_item,
+    )
+    from omnigent.server.schemas import SessionEventInput
+
+    runner.start_error = httpx.ReadTimeout("no answer")
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+    assert response.status_code == 502
+    [started] = store.appended
+    assert isinstance(started.data, CodeRunData)
+    run_id = started.data.run_id
+    conversation = store.get_conversation(_SESSION)
+    assert conversation is not None
+
+    # The body the runner posts once the stopped run ends.
+    item_id = await _persist_external_conversation_item(
+        _SESSION,
+        conversation,
+        SessionEventInput(
+            type="external_conversation_item",
+            data={
+                "item_type": "code_run",
+                "item_data": {
+                    "run_id": run_id,
+                    "phase": "finished",
+                    "status": "stopped",
+                    "exit_code": None,
+                    "duration_ms": 40,
+                    "output": [{"stream": "stdout", "text": "partial"}],
+                    "truncated": False,
+                },
+                "response_id": run_id,
+                "source_id": code_run_source_id(run_id, "finished"),
+            },
+        ),
+        store,  # type: ignore[arg-type]
+    )
+
+    finished = store.items[item_id].data
+    assert isinstance(finished, CodeRunData)
+    assert (finished.phase, finished.status) == ("finished", "stopped")
+    assert [_phase(item) for item in store.appended] == ["started", "finished"]
+    assert [event["type"] for event in published] == [
+        "session.code_run.started",
+        "session.code_run.finished",
+    ]

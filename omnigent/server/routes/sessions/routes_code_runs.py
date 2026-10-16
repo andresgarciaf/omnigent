@@ -520,7 +520,16 @@ def register_code_runs_routes(
                 timeout=_RUNNER_CALL_TIMEOUT_S,
             )
         except (httpx.HTTPError, ConnectionError):
-            failure = (502, "runner_unavailable", "The runner could not be reached")
+            # The runner may have started the run before the answer was lost, so
+            # save no result of our own: stop it, and its real ``finished`` (or,
+            # if it never started, the interrupted state) follows.
+            with contextlib.suppress(httpx.HTTPError, ConnectionError):
+                await runner_client.post(
+                    f"/v1/sessions/{session_id}/code-runs/{run_id}/stop",
+                    json={},
+                    timeout=_RUNNER_CALL_TIMEOUT_S,
+                )
+            return _refusal(502, "runner_unavailable", "The runner could not be reached")
         else:
             if started.status_code in (409, 429):
                 refusal = started.json()
