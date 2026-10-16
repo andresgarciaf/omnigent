@@ -26,7 +26,7 @@ from omnigent.server.feature_flags import FEATURES_ENV_VAR, resolve_feature_flag
 from omnigent.server.routes.sessions import create_sessions_router, routes_code_runs
 from omnigent.server.routes.sessions.routes_code_runs import (
     derive_code_run_command,
-    is_console_block,
+    find_code_fence,
 )
 from omnigent.spec.types import PolicyAction
 from tests.server.routes.test_shell_permission_gate import (
@@ -41,6 +41,7 @@ _OWNER = {"X-Forwarded-Email": "real-owner@example.com"}
 _CODE = "$ echo hi\n$ ls"
 _MESSAGE_TEXT = (
     f"Try this:\n\n```bash\n{_CODE}\n```\n\nand this:\n\n```console\n$ pwd\n/tmp\n```\n"
+    "\nThen:\n\n~~~python title=demo\nprint(1)\n~~~\n\n```\n$ make\n```\n"
 )
 
 
@@ -269,9 +270,40 @@ def test_derive_code_run_command(language: str, code: str, console: bool, expect
     assert derive_code_run_command(language, code, console=console) == expected
 
 
-def test_is_console_block_finds_the_fence_tag() -> None:
-    assert is_console_block(_MESSAGE_TEXT, "$ pwd\n/tmp") is True
-    assert is_console_block(_MESSAGE_TEXT, _CODE) is False
+@pytest.mark.parametrize(
+    ("code", "language", "expected"),
+    [
+        (_CODE, "shell", ("shell", False)),
+        (_CODE + "\n", "shell", ("shell", False)),
+        (_CODE.replace("\n", "\r\n"), "shell", ("shell", False)),
+        ("$ pwd\n/tmp", "shell", ("shell", True)),
+        ("print(1)", "python", ("python", False)),
+        ("$ make", "shell", ("shell", False)),
+        ("$ pwd", "shell", None),
+        ("$ echo hi", "shell", None),
+        ("Try this:", "shell", None),
+        ("```bash\n" + _CODE, "shell", None),
+        (_CODE, "python", None),
+    ],
+    ids=[
+        "whole-fence",
+        "trailing-newline",
+        "crlf",
+        "console",
+        "tilde-python",
+        "untagged-prompts",
+        "console-prefix",
+        "partial-fence",
+        "prose",
+        "fence-with-opener",
+        "language-mismatch",
+    ],
+)
+def test_find_code_fence_requires_one_whole_fence_body(
+    code: str, language: str, expected: tuple[str, bool] | None
+) -> None:
+    fence = find_code_fence(_MESSAGE_TEXT, code, language)
+    assert (None if fence is None else (fence.language, fence.console)) == expected
 
 
 # ── Gate: refused callers never reach the runner ──────────────────
@@ -336,6 +368,10 @@ async def test_mutating_routes_require_a_json_content_type(
         _body(code="x" * (64 * 1024 + 1)),
         _body(block_hash="0" * 64),
         _body(code="echo not in the message"),
+        _body(code="Try this:"),
+        _body(code="$ echo hi"),
+        _body(code="$ pwd"),
+        _body(language="python"),
         _body(message_id="msg_user"),
         _body(message_id="msg_missing"),
         _body(timeout=0),
@@ -348,6 +384,10 @@ async def test_mutating_routes_require_a_json_content_type(
         "oversize",
         "hash",
         "not-verbatim",
+        "prose-snippet",
+        "partial-fence",
+        "console-prefix",
+        "language-mismatch",
         "user-message",
         "unknown-message",
         "timeout-low",

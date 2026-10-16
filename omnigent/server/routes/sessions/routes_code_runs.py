@@ -15,6 +15,7 @@ import re
 import secrets
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -84,10 +85,93 @@ def derive_code_run_command(language: str, code: str, *, console: bool) -> str:
     return "\n".join(lines)
 
 
-def is_console_block(message_text: str, code: str) -> bool:
-    """Whether *code* appears in *message_text* as the body of a ``console`` fence."""
-    pattern = r"(?m)^[ \t]*(?:`{3,}|~{3,})[ \t]*console\b[^\n]*\n" + re.escape(code)
-    return re.search(pattern, message_text) is not None
+# Fence tags a block can run as, keyed to the run language.
+_FENCE_LANGUAGES = {
+    "bash": "shell",
+    "sh": "shell",
+    "shell": "shell",
+    "zsh": "shell",
+    "console": "shell",
+    "python": "python",
+    "javascript": "node",
+    "node": "node",
+}
+_FENCE_OPEN = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
+
+
+@dataclass(frozen=True)
+class CodeFence:
+    """A runnable fenced code block of a message.
+
+    :param language: Run language, ``"shell"``, ``"python"``, or ``"node"``.
+    :param console: Whether the fence is tagged ``console``.
+    """
+
+    language: str
+    console: bool
+
+
+def _normalize_block_text(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+
+
+def _fenced_blocks(text: str) -> list[tuple[str, str]]:
+    """Return ``(info string, body)`` for each fenced code block in *text*.
+
+    Follows CommonMark fences: a run of at least three backticks or tildes
+    opens a block, a run of the same character at least as long closes it,
+    and an unclosed block runs to the end of the text.
+    """
+    blocks: list[tuple[str, str]] = []
+    lines = _normalize_block_text(text).split("\n")
+    index = 0
+    while index < len(lines):
+        opened = _FENCE_OPEN.match(lines[index])
+        index += 1
+        if opened is None or (opened.group(2)[0] == "`" and "`" in opened.group(3)):
+            continue
+        indent, fence, info = len(opened.group(1)), opened.group(2), opened.group(3).strip()
+        body: list[str] = []
+        while index < len(lines):
+            line = lines[index]
+            index += 1
+            closing = line.strip()
+            if (
+                len(line) - len(line.lstrip(" ")) <= 3
+                and closing.startswith(fence)
+                and closing == fence[0] * len(closing)
+            ):
+                break
+            body.append(line[min(indent, len(line) - len(line.lstrip(" "))) :])
+        blocks.append((info, "\n".join(body)))
+    return blocks
+
+
+def find_code_fence(message_text: str, code: str, language: str) -> CodeFence | None:
+    """
+    Find the fence of *message_text* whose whole body is *code*, run as *language*.
+
+    Line endings and trailing newlines are normalized on both sides. The
+    fence's tag decides the language; an untagged fence runs as shell when
+    every non-empty line starts with ``$ ``.
+
+    :returns: The matching fence, or ``None`` when no whole fence body equals
+        *code* with that language.
+    """
+    wanted = _normalize_block_text(code)
+    for info, body in _fenced_blocks(message_text):
+        if _normalize_block_text(body) != wanted:
+            continue
+        tag = info.split(maxsplit=1)[0].lower() if info else ""
+        if tag:
+            fence_language = _FENCE_LANGUAGES.get(tag)
+        else:
+            lines = [line for line in body.split("\n") if line.strip()]
+            prompts_only = bool(lines) and all(line.startswith("$ ") for line in lines)
+            fence_language = "shell" if prompts_only else None
+        if fence_language == language:
+            return CodeFence(language=language, console=tag == "console")
+    return None
 
 
 def _invalid(message: str) -> OmnigentError:
@@ -280,8 +364,9 @@ def register_code_runs_routes(
             and message.data.role == "assistant"
             else None
         )
-        if message_text is None or code not in message_text:
-            raise _invalid("code does not appear in the assistant message")
+        fence = find_code_fence(message_text, code, language) if message_text else None
+        if fence is None:
+            raise _invalid("code is not a whole runnable code block of the assistant message")
 
         runner_client = await _runner_client(session_id, conversation)
         try:
@@ -313,7 +398,7 @@ def register_code_runs_routes(
             return _refusal(429, "too_many_runs", "At most 4 code runs per session")
 
         command = derive_code_run_command(
-            language, code, console=is_console_block(message_text, code)
+            language, _normalize_block_text(code), console=fence.console
         )
         run_id = f"run_{secrets.token_hex(12)}"
         add_audit_attrs(
