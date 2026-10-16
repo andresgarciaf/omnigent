@@ -203,7 +203,7 @@ def policy(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         **kwargs: Any,
     ) -> Any:
         state["calls"].append(kwargs)
-        return state["result"], None
+        return state["result"], state.get("engine")
 
     monkeypatch.setattr(routes_code_runs, "_evaluate_run_policy", evaluate)
     return state
@@ -785,3 +785,76 @@ async def test_subscribe_snapshot_skips_the_runner_when_the_flag_is_off(
 
     assert events == []
     assert runner.calls == []
+
+
+class _LabelEngine:
+    """Engine stand-in that records label writes."""
+
+    def __init__(self) -> None:
+        self.label_writes: list[dict[str, str]] = []
+
+    def apply_label_writes(self, labels: dict[str, str]) -> None:
+        self.label_writes.append(labels)
+
+
+def _shell_call(command: str = "echo hi\nls", timeout: int = 120) -> dict[str, Any]:
+    return {"name": "sys_os_shell", "arguments": {"command": command, "timeout": timeout}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "approved"),
+    [(PolicyAction.ALLOW, False), (PolicyAction.ASK, True)],
+    ids=["allow", "approved-ask"],
+)
+async def test_a_policy_rewrite_of_the_command_is_refused(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    store: _ItemStore,
+    action: PolicyAction,
+    approved: bool,
+) -> None:
+    """The native shell path never applies rewrites, so a rewritten run is refused."""
+    policy["result"] = PolicyResult(
+        action=action, reason="redacted", data=_shell_call(command="echo [redacted]")
+    )
+
+    response = await client.post(_RUNS, json=_body(approved=approved), headers=_OWNER)
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "policy_modified_unsupported"
+    assert _runner_starts(runner) == []
+    assert store.appended == []
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_policy_payload_still_runs(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    published: list[dict[str, Any]],
+) -> None:
+    policy["result"] = PolicyResult(action=PolicyAction.ALLOW, data=_shell_call())
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert response.status_code == 202, response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", [PolicyAction.ALLOW, PolicyAction.DENY])
+async def test_label_writes_land_on_allow_and_deny_like_the_hook_route(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    published: list[dict[str, Any]],
+    action: PolicyAction,
+) -> None:
+    engine = _LabelEngine()
+    policy["engine"] = engine
+    policy["result"] = PolicyResult(action=action, reason="r", set_labels={"ran_code": "1"})
+
+    await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert engine.label_writes == [{"ran_code": "1"}]

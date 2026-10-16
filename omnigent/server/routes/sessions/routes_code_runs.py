@@ -183,6 +183,11 @@ def _refusal(status_code: int, code: str, reason: str | None) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"code": code, "reason": reason or ""})
 
 
+def _shell_call(command: str, timeout: int) -> dict[str, Any]:
+    """The TOOL_CALL payload a run is evaluated as: the owner's ``sys_os_shell``."""
+    return {"name": "sys_os_shell", "arguments": {"command": command, "timeout": timeout}}
+
+
 async def _evaluate_run_policy(
     session_id: str,
     conversation: Conversation,
@@ -234,7 +239,7 @@ async def _evaluate_run_policy(
             caps.policy_llm_connection_factory() if caps.policy_llm_connection_factory else None
         ),
     )
-    data = {"name": "sys_os_shell", "arguments": {"command": command, "timeout": timeout}}
+    data = _shell_call(command, timeout)
     ctx = _build_evaluation_context(
         Phase.TOOL_CALL, data, {"type": "PHASE_TOOL_CALL", "data": data}, actor=actor
     )
@@ -436,8 +441,24 @@ def register_code_runs_routes(
         action = result.action if result is not None else PolicyAction.ALLOW
         add_audit_attrs(code_run_policy_decision=action.value)
         approved_by: str | None = None
+        # Labels a non-ASK verdict wrote land now, as on the native hook route.
+        if result is not None and action != PolicyAction.ASK and result.set_labels:
+            if engine is not None:
+                engine.apply_label_writes(result.set_labels)
         if result is not None and action == PolicyAction.DENY:
             return _refusal(403, "policy_denied", result.reason)
+        # The native shell hook enforces verdicts but never applies a policy's
+        # rewritten arguments, so a run whose command a policy changed is refused.
+        if (
+            result is not None
+            and result.data is not None
+            and result.data != _shell_call(command, timeout)
+        ):
+            return _refusal(
+                403,
+                "policy_modified_unsupported",
+                "A policy changed this command; rewritten code runs are not supported",
+            )
         if result is not None and action == PolicyAction.ASK:
             if body.get("approved") is not True:
                 return _refusal(409, "needs_approval", result.reason)
