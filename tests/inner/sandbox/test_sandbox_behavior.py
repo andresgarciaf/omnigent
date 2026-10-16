@@ -32,6 +32,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -826,3 +827,47 @@ def test_sandbox_start_in_scratch_workspace_remains_readable(
         "cwd bound for reads even when --chdir points elsewhere."
     )
     assert absolute_read["stdout"] == "hello-from-workspace"
+
+
+def test_sandbox_shell_stream_stop_ends_every_descendant(
+    tmp_path: Path,
+    active_sandbox_spec_factory: Callable[..., OSEnvSandboxSpec],
+    sandbox_pythonpath_env: None,
+) -> None:
+    """
+    Stopping a sandboxed ``shell_stream`` ends the background loop it started.
+
+    The loop holds the run's stdout open, so the stream can only end promptly
+    once every descendant is gone; a survivor would keep the pipe open until
+    the helper's kill grace runs out.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    os_env = create_os_environment(
+        OSEnvSpec(
+            type="caller_process",
+            cwd=str(workspace),
+            sandbox=active_sandbox_spec_factory(),
+        )
+    )
+    stop_requested: list[float] = []
+
+    def on_output(stream: str, text: str) -> None:
+        if "ready" in text and not stop_requested:
+            stop_requested.append(time.monotonic())
+            os_env.stop_shell_stream()
+
+    try:
+        result = run_async(
+            os_env.shell_stream(
+                "(while true; do echo tick; sleep 0.1; done) & echo ready; wait",
+                language="shell",
+                timeout=60,
+                on_output=on_output,
+            )
+        )
+    finally:
+        os_env.close()
+    assert stop_requested, result
+    assert result == {"exit_code": None, "timed_out": False, "truncated": False}
+    assert time.monotonic() - stop_requested[0] < 1.5
