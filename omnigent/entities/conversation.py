@@ -714,6 +714,20 @@ class CodeRunData(BaseModel):
         return self
 
 
+def code_run_source_id(run_id: str, phase: Literal["started", "finished"]) -> str:
+    """
+    Return the ``external_conversation_item`` source id for a run's item.
+
+    The server and the runner both derive a run's item ids from it, so a
+    retried or late post of the same phase dedupes instead of duplicating.
+
+    :param run_id: The run, e.g. ``"run_abc"``.
+    :param phase: ``"started"`` or ``"finished"``.
+    :returns: E.g. ``"code_run:run_abc:finished"``.
+    """
+    return f"code_run:{run_id}:{phase}"
+
+
 _CODE_RUN_PHASE_FIELDS: dict[str, tuple[str, ...]] = {
     "started": ("message_id", "block_hash", "language", "command", "timeout", "started_at"),
     "finished": ("status", "duration_ms", "output", "truncated"),

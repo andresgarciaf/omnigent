@@ -22,7 +22,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from omnigent.entities.conversation import CODE_RUN_OUTPUT_MAX_CHARS
+from omnigent.entities.conversation import CODE_RUN_OUTPUT_MAX_CHARS, code_run_source_id
 from omnigent.inner.async_utils import run_sync_cleanup
 
 if TYPE_CHECKING:
@@ -361,7 +361,7 @@ class CodeRunRegistry:
                     "truncated": run.output.truncated or bool(result.get("truncated")),
                 },
                 "response_id": run.run_id,
-                "source_id": f"code_run:{run.run_id}:finished",
+                "source_id": code_run_source_id(run.run_id, "finished"),
             },
         }
         url = f"/v1/sessions/{run.session_id}/events"

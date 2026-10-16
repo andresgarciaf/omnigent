@@ -14,7 +14,6 @@ import hashlib
 import re
 import secrets
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 from omnigent.debug_logging import add_audit_attrs
 from omnigent.entities import CodeRunData, Conversation, MessageData, NewConversationItem
+from omnigent.entities.conversation import CodeRunOutputSegment, code_run_source_id
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.policies.types import PolicyResult
 from omnigent.runtime import get_policy_store
@@ -40,6 +40,7 @@ from omnigent.server.routes._content_type import require_json_content_type
 from omnigent.server.routes._errors import session_not_found as _session_not_found
 from omnigent.server.routes._sessions.helpers import (
     _build_evaluation_context,
+    _external_item_stable_id,
     _get_runner_client_for_resource_access,
     _message_text,
     _publish_code_run_item,
@@ -305,6 +306,22 @@ def register_code_runs_routes(
             raise _session_not_found()
         return user_id, conversation
 
+    async def _save_code_run_item(
+        session_id: str, run_id: str, user_id: str | None, data: CodeRunData
+    ) -> None:
+        # The id is the one the runner's own post of this phase would get, so a
+        # late post of the same item dedupes instead of duplicating it.
+        item = NewConversationItem(
+            type="code_run",
+            response_id=run_id,
+            created_by=attribution_user(user_id),
+            stable_id=_external_item_stable_id(session_id, code_run_source_id(run_id, data.phase)),
+            data=data,
+        )
+        [persisted] = await asyncio.to_thread(conversation_store.append, session_id, [item])
+        if not persisted.deduplicated:
+            _publish_code_run_item(session_id, persisted)
+
     async def _runner_client(session_id: str, conversation: Conversation) -> httpx.AsyncClient:
         client = await _get_runner_client_for_resource_access(
             session_id, conversation=conversation
@@ -433,31 +450,12 @@ def register_code_runs_routes(
                 with contextlib.suppress(ConversationNotFoundError):
                     engine.apply_state_updates(result.state_updates)
 
-        try:
-            started = await runner_client.post(
-                f"/v1/sessions/{session_id}/code-runs",
-                json={
-                    "run_id": run_id,
-                    "language": language,
-                    "command": command,
-                    "timeout": timeout,
-                },
-                timeout=_RUNNER_CALL_TIMEOUT_S,
-            )
-        except (httpx.HTTPError, ConnectionError) as exc:
-            raise HTTPException(status_code=502, detail="runner code-run start failed") from exc
-        if started.status_code in (409, 429):
-            refusal = started.json()
-            return _refusal(started.status_code, refusal.get("code", ""), refusal.get("reason"))
-        if started.status_code >= 400:
-            raise HTTPException(status_code=502, detail="runner refused the code run")
-
-        item = NewConversationItem(
-            type="code_run",
-            response_id=run_id,
-            created_by=attribution_user(user_id),
-            stable_id=uuid.uuid5(uuid.NAMESPACE_URL, f"omnigent-code-run:{run_id}:started").hex,
-            data=CodeRunData(
+        # Saved before the runner starts, so ``finished`` can never land first.
+        await _save_code_run_item(
+            session_id,
+            run_id,
+            user_id,
+            CodeRunData(
                 run_id=run_id,
                 phase="started",
                 message_id=message_id,
@@ -469,8 +467,47 @@ def register_code_runs_routes(
                 started_at=int(time.time()),
             ),
         )
-        [persisted] = await asyncio.to_thread(conversation_store.append, session_id, [item])
-        _publish_code_run_item(session_id, persisted)
+        failure: tuple[int, str, str] | None = None
+        try:
+            started = await runner_client.post(
+                f"/v1/sessions/{session_id}/code-runs",
+                json={
+                    "run_id": run_id,
+                    "language": language,
+                    "command": command,
+                    "timeout": timeout,
+                },
+                timeout=_RUNNER_CALL_TIMEOUT_S,
+            )
+        except (httpx.HTTPError, ConnectionError):
+            failure = (502, "runner_unavailable", "The runner could not be reached")
+        else:
+            if started.status_code in (409, 429):
+                refusal = started.json()
+                failure = (
+                    started.status_code,
+                    str(refusal.get("code", "")),
+                    str(refusal.get("reason") or "The runner refused the code run"),
+                )
+            elif started.status_code >= 400:
+                failure = (502, "runner_error", "The runner refused the code run")
+        if failure is not None:
+            status_code, code, reason = failure
+            await _save_code_run_item(
+                session_id,
+                run_id,
+                user_id,
+                CodeRunData(
+                    run_id=run_id,
+                    phase="finished",
+                    status="failed",
+                    exit_code=None,
+                    duration_ms=0,
+                    output=[CodeRunOutputSegment(stream="stderr", text=reason + "\n")],
+                    truncated=False,
+                ),
+            )
+            return _refusal(status_code, code, reason)
         return JSONResponse(status_code=202, content={"run_id": run_id})
 
     @router.post(

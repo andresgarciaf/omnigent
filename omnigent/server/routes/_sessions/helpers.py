@@ -15,6 +15,7 @@ import re
 import secrets
 import time
 import urllib.parse
+import uuid
 import weakref
 from collections import deque
 from collections.abc import (
@@ -3068,6 +3069,19 @@ def _publish_external_conversation_item(
     if message_id is not None:
         payload["message_id"] = message_id
     session_stream.publish(session_id, payload)
+
+
+def _external_item_stable_id(session_id: str, source_id: str) -> str:
+    """
+    Derive the item id an ``external_conversation_item`` with *source_id* gets.
+
+    :param session_id: Session/conversation identifier.
+    :param source_id: The producer's dedup key, e.g. ``"code_run:run_abc:finished"``.
+    :returns: A 32-char hex stable id.
+    """
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL, f"omnigent-external-item:{session_id}:{source_id.strip()}"
+    ).hex
 
 
 def _publish_code_run_item(session_id: str, item: ConversationItem) -> None:

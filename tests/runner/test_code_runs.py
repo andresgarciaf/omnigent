@@ -11,6 +11,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from omnigent.entities.conversation import code_run_source_id
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
 from omnigent.runner import create_runner_app
 from omnigent.runner.code_runs import (
@@ -215,6 +216,7 @@ async def test_finished_item_is_posted_with_a_deterministic_source_id() -> None:
     assert body["type"] == "external_conversation_item"
     data = body["data"]
     assert data["item_type"] == "code_run"
+    assert data["source_id"] == code_run_source_id("run_1", "finished")
     assert data["source_id"] == "code_run:run_1:finished"
     item = data["item_data"]
     assert item["run_id"] == "run_1"

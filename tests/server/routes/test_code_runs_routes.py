@@ -45,6 +45,11 @@ _MESSAGE_TEXT = (
 )
 
 
+def _phase(item: NewConversationItem) -> str:
+    assert isinstance(item.data, CodeRunData)
+    return item.data.phase
+
+
 def _hash(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
@@ -102,6 +107,9 @@ class _RunnerClient:
         self.running: list[dict[str, Any]] = []
         self.copy_on_write = False
         self.start_status = 202
+        self.start_error: Exception | None = None
+        self.store: _ItemStore | None = None
+        self.saved_before_post: list[list[str]] = []
 
     def _record(self, method: str, url: str, body: Any = None) -> None:
         self.calls.append((method, url, body))
@@ -122,6 +130,10 @@ class _RunnerClient:
     ) -> httpx.Response:
         del timeout
         self._record("POST", url, json)
+        if self.store is not None:
+            self.saved_before_post.append([_phase(item) for item in self.store.appended])
+        if self.start_error is not None and not url.endswith("/stop"):
+            raise self.start_error
         if url.endswith("/stop"):
             return httpx.Response(200, json={"stopped": True}, request=httpx.Request("POST", url))
         return httpx.Response(
@@ -441,7 +453,72 @@ async def test_the_runner_limit_still_reaches_the_client_as_429(
     response = await client.post(_RUNS, json=_body(), headers=_OWNER)
 
     assert response.status_code == 429
-    assert store.appended == []
+    assert [_phase(item) for item in store.appended] == ["started", "finished"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("start_status", "start_error", "client_status"),
+    [
+        (429, None, 429),
+        (409, None, 409),
+        (500, None, 502),
+        (202, httpx.ConnectError("runner down"), 502),
+    ],
+    ids=["runner-limit", "runner-copy-on-write", "runner-error", "network"],
+)
+async def test_a_failed_forward_saves_a_failed_finished_item(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    store: _ItemStore,
+    published: list[dict[str, Any]],
+    start_status: int,
+    start_error: Exception | None,
+    client_status: int,
+) -> None:
+    from omnigent.entities.conversation import code_run_source_id
+    from omnigent.server.routes._sessions.helpers import _external_item_stable_id
+
+    runner.start_status = start_status
+    runner.start_error = start_error
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert response.status_code == client_status
+    started, finished = store.appended
+    assert isinstance(started.data, CodeRunData) and isinstance(finished.data, CodeRunData)
+    assert finished.data.run_id == started.data.run_id
+    assert (finished.data.phase, finished.data.status) == ("finished", "failed")
+    assert finished.data.exit_code is None
+    assert finished.data.output and finished.data.output[0].stream == "stderr"
+    # The same id the runner's own finished post would get, so a late one dedupes.
+    assert finished.stable_id == _external_item_stable_id(
+        _SESSION, code_run_source_id(started.data.run_id, "finished")
+    )
+    assert [event["type"] for event in published] == [
+        "session.code_run.started",
+        "session.code_run.finished",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_started_is_saved_before_the_run_is_forwarded(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    store: _ItemStore,
+    published: list[dict[str, Any]],
+) -> None:
+    runner.store = store
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert response.status_code == 202
+    assert runner.saved_before_post == [["started"]]
+    [started] = store.appended
+    assert isinstance(started.data, CodeRunData)
+    assert runner.calls[-1][2]["run_id"] == started.data.run_id == response.json()["run_id"]
 
 
 # ── Policy ────────────────────────────────────────────────────────
