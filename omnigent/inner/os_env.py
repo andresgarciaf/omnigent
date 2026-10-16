@@ -511,6 +511,13 @@ class _HelperProcessClient:
             proc.stdin.write(json.dumps(payload) + "\n")
             proc.stdin.flush()
 
+    def kill(self) -> None:
+        """Kill the helper without the request lock, ending a stuck stream."""
+        proc = self._proc
+        if proc is not None:
+            with contextlib.suppress(OSError):
+                proc.kill()
+
     def _request_locked(
         self,
         payload: OpRequest,
@@ -1115,6 +1122,10 @@ class CallerProcessOSEnvironment(OSEnvironment):
     def stop_shell_stream(self) -> None:
         """Ask a running ``shell_stream`` to kill its process group."""
         self._helper.send_control({"op": "stop"})
+
+    def kill_shell_stream(self) -> None:
+        """Kill the helper of a ``shell_stream`` that did not stop on request."""
+        self._helper.kill()
 
     async def delete(self, path: str, *, recursive: bool = False) -> OpResult:
         result = await run_sync_on_thread(
