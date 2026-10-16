@@ -520,3 +520,33 @@ async def test_a_run_survives_a_dropped_viewer_stream(
     item = finished[0]["data"]["item_data"]
     assert item["status"] == "exited", item
     assert "".join(segment["text"] for segment in item["output"]) == "before\nafter\n"
+
+
+@pytest.mark.asyncio
+async def test_code_run_routes_refuse_unauthenticated_calls_like_the_shell_route() -> None:
+    """A direct call without the runner token is refused exactly as the shell route refuses it."""
+    app = create_runner_app(
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+        auth_token="runner-secret",
+    )
+    base = f"/v1/sessions/{_SESSION}"
+    calls = [
+        ("POST", f"{base}/resources/environments/default/shell", {"command": "id"}),
+        ("POST", f"{base}/code-runs", _run_body()),
+        ("POST", f"{base}/code-runs/run_1/stop", {}),
+        ("GET", f"{base}/code-runs?status=running", None),
+    ]
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://runner") as client:
+        for headers in ({}, {"Authorization": "Bearer wrong"}):
+            refusals = [
+                await client.request(method, url, json=body, headers=headers)
+                for method, url, body in calls
+            ]
+            assert {(r.status_code, r.text) for r in refusals} == {
+                (401, '{"detail":"Invalid or missing runner auth token"}')
+            }
+        listed = await client.get(
+            f"{base}/code-runs", headers={"Authorization": "Bearer runner-secret"}
+        )
+    assert listed.status_code == 200
