@@ -6088,6 +6088,10 @@
             "session.btw_sidechat": "#/components/schemas/SessionBtwSidechatEvent",
             "session.changed_files.invalidated": "#/components/schemas/SessionChangedFilesInvalidatedEvent",
             "session.child_session.updated": "#/components/schemas/SessionChildSessionUpdatedEvent",
+            "session.code_run.finished": "#/components/schemas/SessionCodeRunFinishedEvent",
+            "session.code_run.output": "#/components/schemas/SessionCodeRunOutputEvent",
+            "session.code_run.snapshot": "#/components/schemas/SessionCodeRunSnapshotEvent",
+            "session.code_run.started": "#/components/schemas/SessionCodeRunStartedEvent",
             "session.codex_approval_mode": "#/components/schemas/SessionCodexApprovalModeEvent",
             "session.collaboration_mode": "#/components/schemas/SessionCollaborationModeEvent",
             "session.created": "#/components/schemas/SessionCreatedEvent",
@@ -6192,6 +6196,18 @@
           },
           {
             "$ref": "#/components/schemas/SessionTerminalActivityEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionCodeRunStartedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionCodeRunOutputEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionCodeRunFinishedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/SessionCodeRunSnapshotEvent"
           },
           {
             "$ref": "#/components/schemas/OutputTextDeltaEvent"
@@ -6472,6 +6488,187 @@
           "child"
         ],
         "title": "SessionChildSessionUpdatedEvent",
+        "type": "object"
+      },
+      "SessionCodeRunFinishedEvent": {
+        "description": "A chat code run ended and its `finished` item was saved.",
+        "properties": {
+          "item": {
+            "additionalProperties": true,
+            "description": "The saved `code_run` item (`phase: \"finished\"`).",
+            "title": "Item",
+            "type": "object"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sequence Number"
+          },
+          "type": {
+            "const": "session.code_run.finished",
+            "description": "Always `\"session.code_run.finished\"`.",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "item"
+        ],
+        "title": "SessionCodeRunFinishedEvent",
+        "type": "object"
+      },
+      "SessionCodeRunOutputEvent": {
+        "description": "Live output from a running chat code run. Transient; not persisted.",
+        "properties": {
+          "offset": {
+            "description": "Characters of the run's output before `text`; clients drop output whose offset they already have.",
+            "format": "int64",
+            "title": "Offset",
+            "type": "integer"
+          },
+          "run_id": {
+            "description": "The run, e.g. `\"run_abc\"`.",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sequence Number"
+          },
+          "stream": {
+            "description": "`\"stdout\"` or `\"stderr\"`.",
+            "enum": [
+              "stdout",
+              "stderr"
+            ],
+            "title": "Stream",
+            "type": "string"
+          },
+          "text": {
+            "description": "The chunk's text.",
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "session.code_run.output",
+            "description": "Always `\"session.code_run.output\"`.",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "run_id",
+          "offset",
+          "stream",
+          "text"
+        ],
+        "title": "SessionCodeRunOutputEvent",
+        "type": "object"
+      },
+      "SessionCodeRunSnapshotEvent": {
+        "description": "Output so far of a run in progress, sent when a client subscribes.",
+        "properties": {
+          "offset": {
+            "description": "Total characters the run has produced; later output events start at or after it.",
+            "format": "int64",
+            "title": "Offset",
+            "type": "integer"
+          },
+          "output": {
+            "description": "The runner's bounded copy (start and end kept).",
+            "items": {
+              "$ref": "#/components/schemas/CodeRunOutputSegment"
+            },
+            "title": "Output",
+            "type": "array"
+          },
+          "run_id": {
+            "description": "The run, e.g. `\"run_abc\"`.",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sequence Number"
+          },
+          "type": {
+            "const": "session.code_run.snapshot",
+            "description": "Always `\"session.code_run.snapshot\"`.",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "run_id",
+          "offset",
+          "output"
+        ],
+        "title": "SessionCodeRunSnapshotEvent",
+        "type": "object"
+      },
+      "SessionCodeRunStartedEvent": {
+        "description": "A chat code run was accepted and its `started` item saved.",
+        "properties": {
+          "item": {
+            "additionalProperties": true,
+            "description": "The saved `code_run` item (`phase: \"started\"`).",
+            "title": "Item",
+            "type": "object"
+          },
+          "sequence_number": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sequence Number"
+          },
+          "type": {
+            "const": "session.code_run.started",
+            "description": "Always `\"session.code_run.started\"`.",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "item"
+        ],
+        "title": "SessionCodeRunStartedEvent",
         "type": "object"
       },
       "SessionCodexApprovalModeEvent": {
