@@ -356,18 +356,6 @@ async def test_non_owners_are_refused_before_the_runner(
     assert runner.calls == []
 
 
-@pytest.mark.asyncio
-async def test_mutating_routes_require_a_json_content_type(
-    client: httpx.AsyncClient, runner: _RunnerClient
-) -> None:
-    response = await client.post(
-        _RUNS, content="{}", headers={**_OWNER, "Content-Type": "text/plain"}
-    )
-
-    assert response.status_code == 415
-    assert runner.calls == []
-
-
 # ── Start: checks in order ────────────────────────────────────────
 
 
@@ -858,3 +846,134 @@ async def test_label_writes_land_on_allow_and_deny_like_the_hook_route(
     await client.post(_RUNS, json=_body(), headers=_OWNER)
 
     assert engine.label_writes == [{"ran_code": "1"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", [_RUNS, f"{_RUNS}/run_1/stop"], ids=["start", "stop"])
+@pytest.mark.parametrize(
+    ("headers", "status"),
+    [
+        ({}, 401),
+        ({"X-Forwarded-Email": "viewer@example.com"}, 403),
+        ({"X-Forwarded-Email": "owner@example.com"}, 403),
+        (_OWNER, 415),
+    ],
+    ids=["unauthenticated", "read-only", "edit", "owner"],
+)
+async def test_the_owner_check_runs_before_the_content_type_check(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    path: str,
+    headers: dict[str, str],
+    status: int,
+) -> None:
+    response = await client.post(
+        path, content="{}", headers={**headers, "Content-Type": "text/plain"}
+    )
+
+    assert response.status_code == status, response.text
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_deny_wins_over_approved(
+    client: httpx.AsyncClient, runner: _RunnerClient, policy: dict[str, Any], store: _ItemStore
+) -> None:
+    policy["result"] = PolicyResult(action=PolicyAction.DENY, reason="No.")
+
+    response = await client.post(_RUNS, json=_body(approved=True), headers=_OWNER)
+
+    assert (response.status_code, response.json()["code"]) == (403, "policy_denied")
+    assert _runner_starts(runner) == []
+    assert store.appended == []
+
+
+@pytest.fixture
+def audit(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    recorded: dict[str, object] = {}
+
+    def record(**attrs: object) -> None:
+        recorded.update({key: value for key, value in attrs.items() if value is not None})
+
+    monkeypatch.setattr(routes_code_runs, "add_audit_attrs", record)
+    return recorded
+
+
+_AUDIT_KEYS = {
+    "code_run_id",
+    "code_run_language",
+    "code_run_command_length",
+    "code_run_policy_decision",
+    "code_run_approved_by",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "body", "status", "decision", "approved_by"),
+    [
+        (None, _body(), 202, "allow", ""),
+        (PolicyResult(action=PolicyAction.DENY, reason="no"), _body(), 403, "deny", ""),
+        (PolicyResult(action=PolicyAction.ASK, reason="ok?"), _body(), 409, "ask", ""),
+        (
+            PolicyResult(action=PolicyAction.ASK, reason="ok?"),
+            _body(approved=True),
+            202,
+            "ask",
+            "real-owner@example.com",
+        ),
+    ],
+    ids=["allow", "deny", "ask", "approved-ask"],
+)
+async def test_every_policy_outcome_is_audited(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    published: list[dict[str, Any]],
+    audit: dict[str, object],
+    result: PolicyResult | None,
+    body: dict[str, Any],
+    status: int,
+    decision: str,
+    approved_by: str,
+) -> None:
+    policy["result"] = result
+
+    response = await client.post(_RUNS, json=body, headers=_OWNER)
+
+    assert response.status_code == status
+    assert set(audit) == _AUDIT_KEYS
+    assert audit["code_run_language"] == "shell"
+    assert audit["code_run_command_length"] == len("echo hi\nls")
+    assert (audit["code_run_policy_decision"], audit["code_run_approved_by"]) == (
+        decision,
+        approved_by,
+    )
+
+
+@pytest.mark.asyncio
+async def test_refusals_before_policy_are_audited_as_not_evaluated(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    audit: dict[str, object],
+) -> None:
+    runner.copy_on_write = True
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert response.status_code == 409
+    assert audit["code_run_policy_decision"] == "not_evaluated"
+    assert audit["code_run_approved_by"] == ""
+    assert audit["code_run_language"] == "shell"
+    assert str(audit["code_run_id"]).startswith("run_")
+
+
+@pytest.mark.asyncio
+async def test_stop_is_audited_with_its_outcome(
+    client: httpx.AsyncClient, runner: _RunnerClient, audit: dict[str, object]
+) -> None:
+    response = await client.post(f"{_RUNS}/run_9/stop", json={}, headers=_OWNER)
+
+    assert response.status_code == 200
+    assert audit == {"code_run_id": "run_9", "code_run_stopped": True}

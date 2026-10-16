@@ -340,7 +340,7 @@ def register_code_runs_routes(
         status_code=202,
         response_model=None,
         # The flag check runs first so a disabled deployment answers 404 to everyone.
-        dependencies=[Depends(_require_code_block_run), Depends(require_json_content_type)],
+        dependencies=[Depends(_require_code_block_run)],
     )
     async def start_code_run(request: Request, session_id: str) -> Any:
         """
@@ -355,6 +355,27 @@ def register_code_runs_routes(
             ``needs_approval`` / ``copy_on_write``, 429 ``too_many_runs``.
         """
         user_id, conversation = await _owner_conversation(request, session_id)
+        require_json_content_type(request)
+        run_id = f"run_{secrets.token_hex(12)}"
+        # Every outcome records these; unknown values stay unset.
+        audit: dict[str, object] = {
+            "code_run_id": run_id,
+            "code_run_policy_decision": "not_evaluated",
+            "code_run_approved_by": "",
+        }
+        try:
+            return await _start(request, session_id, user_id, conversation, run_id, audit)
+        finally:
+            add_audit_attrs(**audit)
+
+    async def _start(
+        request: Request,
+        session_id: str,
+        user_id: str | None,
+        conversation: Conversation,
+        run_id: str,
+        audit: dict[str, object],
+    ) -> Any:
         try:
             body = await request.json()
         except ValueError as exc:
@@ -365,6 +386,7 @@ def register_code_runs_routes(
         language = body.get("language")
         if not isinstance(language, str) or language not in _CODE_RUN_LANGUAGES:
             raise _invalid("language must be one of shell, python, node")
+        audit["code_run_language"] = language
         code = body.get("code")
         if not isinstance(code, str) or not code.strip():
             raise _invalid("code must be a non-empty string")
@@ -422,10 +444,7 @@ def register_code_runs_routes(
         command = derive_code_run_command(
             language, _normalize_block_text(code), console=fence.console
         )
-        run_id = f"run_{secrets.token_hex(12)}"
-        add_audit_attrs(
-            code_run_id=run_id, code_run_language=language, code_run_command_length=len(command)
-        )
+        audit["code_run_command_length"] = len(command)
         actor = {"initiated_by": "user"}
         if user_id is not None:
             actor = {"run_as": user_id, **actor}
@@ -439,7 +458,7 @@ def register_code_runs_routes(
             actor=actor,
         )
         action = result.action if result is not None else PolicyAction.ALLOW
-        add_audit_attrs(code_run_policy_decision=action.value)
+        audit["code_run_policy_decision"] = action.value
         approved_by: str | None = None
         # Labels a non-ASK verdict wrote land now, as on the native hook route.
         if result is not None and action != PolicyAction.ASK and result.set_labels:
@@ -463,7 +482,7 @@ def register_code_runs_routes(
             if body.get("approved") is not True:
                 return _refusal(409, "needs_approval", result.reason)
             approved_by = user_id or "owner"
-            add_audit_attrs(code_run_approved_by=approved_by)
+            audit["code_run_approved_by"] = approved_by
             # Side effects an ASKing policy withheld land once the owner approves.
             if engine is not None and result.set_labels:
                 engine.apply_label_writes(result.set_labels)
@@ -534,7 +553,7 @@ def register_code_runs_routes(
     @router.post(
         "/sessions/{session_id}/code-runs/{run_id}/stop",
         response_model=None,
-        dependencies=[Depends(_require_code_block_run), Depends(require_json_content_type)],
+        dependencies=[Depends(_require_code_block_run)],
     )
     async def stop_code_run(request: Request, session_id: str, run_id: str) -> Any:
         """
@@ -546,6 +565,7 @@ def register_code_runs_routes(
         :returns: ``{"stopped": bool}``.
         """
         _, conversation = await _owner_conversation(request, session_id)
+        require_json_content_type(request)
         add_audit_attrs(code_run_id=run_id)
         runner_client = await _runner_client(session_id, conversation)
         try:
@@ -558,4 +578,6 @@ def register_code_runs_routes(
             raise HTTPException(status_code=502, detail="runner code-run stop failed") from exc
         if response.status_code >= 400:
             raise HTTPException(status_code=502, detail="runner code-run stop failed")
-        return {"stopped": bool(response.json().get("stopped"))}
+        stopped = bool(response.json().get("stopped"))
+        add_audit_attrs(code_run_stopped=stopped)
+        return {"stopped": stopped}
