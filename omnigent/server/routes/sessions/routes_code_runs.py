@@ -1,0 +1,381 @@
+"""Session routes that start and stop chat code runs on the session's runner.
+
+The owner runs a code block from an assistant message. Checks run in a fixed
+order so each refusal is predictable, policy is evaluated as the owner's own
+``sys_os_shell`` call, and the runner executes the run in a dedicated sandbox
+helper. The runner later posts the ``finished`` item itself.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import hashlib
+import re
+import secrets
+import time
+import uuid
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from omnigent.debug_logging import add_audit_attrs
+from omnigent.entities import CodeRunData, Conversation, MessageData, NewConversationItem
+from omnigent.errors import ErrorCode, OmnigentError
+from omnigent.policies.types import PolicyResult
+from omnigent.runtime import get_policy_store
+from omnigent.runtime.policies.builder import any_policies_apply, build_policy_engine
+from omnigent.runtime.policies.engine import PolicyEngine
+from omnigent.server.auth import LEVEL_OWNER, AuthProvider
+from omnigent.server.feature_flags import Feature
+from omnigent.server.routes._auth_helpers import attribution_user
+from omnigent.server.routes._auth_helpers import get_user_id as _get_user_id
+from omnigent.server.routes._auth_helpers import (
+    require_access_and_level as _require_access_and_level,
+)
+from omnigent.server.routes._content_type import require_json_content_type
+from omnigent.server.routes._errors import session_not_found as _session_not_found
+from omnigent.server.routes._sessions.helpers import (
+    _build_evaluation_context,
+    _get_runner_client_for_resource_access,
+    _message_text,
+    _publish_code_run_item,
+)
+from omnigent.spec.types import Phase, PolicyAction
+from omnigent.stores import AgentStore, ConversationStore
+from omnigent.stores.conversation_store import ConversationNotFoundError
+from omnigent.stores.permission_store import PermissionStore
+
+CODE_RUN_MAX_CODE_BYTES = 64 * 1024
+CODE_RUN_DEFAULT_TIMEOUT_S = 120
+CODE_RUN_MAX_TIMEOUT_S = 600
+CODE_RUN_MAX_RUNNING = 4
+_CODE_RUN_LANGUAGES = frozenset({"shell", "python", "node"})
+_PROMPT_PREFIXES = ("$ ", "% ")
+# Runner calls here return at once (the run itself is detached on the runner).
+_RUNNER_CALL_TIMEOUT_S = 30.0
+
+
+def derive_code_run_command(language: str, code: str, *, console: bool) -> str:
+    """
+    Turn a block's raw text into the command that runs.
+
+    Shell blocks lose their leading ``$ `` / ``% `` prompts; a ``console``
+    block keeps only its prompt lines, dropping the sample output between
+    them. Python and Node source is unchanged.
+
+    :param language: ``"shell"``, ``"python"``, or ``"node"``.
+    :param code: The block's raw text.
+    :param console: Whether the block is tagged ``console``.
+    :returns: The command or source to run.
+    """
+    if language != "shell":
+        return code
+    lines: list[str] = []
+    for line in code.splitlines():
+        prefix = next((p for p in _PROMPT_PREFIXES if line.startswith(p)), None)
+        if prefix is not None:
+            lines.append(line[len(prefix) :])
+        elif not console:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def is_console_block(message_text: str, code: str) -> bool:
+    """Whether *code* appears in *message_text* as the body of a ``console`` fence."""
+    pattern = r"(?m)^[ \t]*(?:`{3,}|~{3,})[ \t]*console\b[^\n]*\n" + re.escape(code)
+    return re.search(pattern, message_text) is not None
+
+
+def _invalid(message: str) -> OmnigentError:
+    return OmnigentError(message, code=ErrorCode.INVALID_INPUT)
+
+
+def _refusal(status_code: int, code: str, reason: str | None) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"code": code, "reason": reason or ""})
+
+
+async def _evaluate_run_policy(
+    session_id: str,
+    conversation: Conversation,
+    agent_store: AgentStore,
+    conversation_store: ConversationStore,
+    *,
+    command: str,
+    timeout: int,
+    actor: dict[str, str],
+) -> tuple[PolicyResult | None, PolicyEngine | None]:
+    """
+    Evaluate TOOL_CALL policy for a run as the owner's ``sys_os_shell`` call.
+
+    Builds a fresh engine per request, as the native ``PreToolUse`` hook does
+    in ``POST /sessions/{id}/policies/evaluate``.
+
+    :returns: The composed result and its engine, or ``(None, None)`` when no
+        policy applies.
+    """
+    from omnigent.server.routes import sessions as _sf
+
+    agent = agent_store.get(conversation.agent_id) if conversation.agent_id else None
+    if agent is None:
+        return None, None
+    loaded = _sf.get_agent_cache().load(
+        agent.id, agent.bundle_location, expand_env=agent.operator_authored
+    )
+    caps = _sf.get_caps()
+    if not any_policies_apply(
+        spec=loaded.spec,
+        conversation_id=session_id,
+        default_policies=caps.default_policies,
+        policy_store=get_policy_store(),
+        phase=Phase.TOOL_CALL,
+        tool_name="sys_os_shell",
+        conversation=conversation,
+    ):
+        return None, None
+    engine = build_policy_engine(
+        spec=loaded.spec,
+        conversation_id=session_id,
+        conversation_store=conversation_store,
+        conversation=conversation,
+        expected_agent_id=agent.id,
+        default_policies=caps.default_policies,
+        policy_store=get_policy_store(),
+        server_llm=caps.llm,
+        host_connection=(
+            caps.policy_llm_connection_factory() if caps.policy_llm_connection_factory else None
+        ),
+    )
+    data = {"name": "sys_os_shell", "arguments": {"command": command, "timeout": timeout}}
+    ctx = _build_evaluation_context(
+        Phase.TOOL_CALL, data, {"type": "PHASE_TOOL_CALL", "data": data}, actor=actor
+    )
+    return await engine.evaluate(ctx), engine
+
+
+def register_code_runs_routes(
+    router: APIRouter,
+    *,
+    conversation_store: ConversationStore,
+    agent_store: AgentStore,
+    auth_provider: AuthProvider | None = None,
+    permission_store: PermissionStore | None = None,
+) -> None:
+    """Register ``/sessions/{id}/code-runs`` routes on *router*."""
+
+    def _require_code_block_run(request: Request) -> None:
+        flags = getattr(request.app.state, "feature_flags", None)
+        if flags is None or not flags.enabled(Feature.CODE_BLOCK_RUN):
+            raise HTTPException(status_code=404, detail="Not Found")
+
+    async def _owner_conversation(
+        request: Request, session_id: str
+    ) -> tuple[str | None, Conversation]:
+        user_id = _get_user_id(request, auth_provider)
+        access = await _require_access_and_level(
+            user_id, session_id, LEVEL_OWNER, permission_store, conversation_store
+        )
+        conversation = access.conversation
+        if conversation is None:
+            conversation = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+        if conversation is None:
+            raise _session_not_found()
+        return user_id, conversation
+
+    async def _runner_client(session_id: str, conversation: Conversation) -> httpx.AsyncClient:
+        client = await _get_runner_client_for_resource_access(
+            session_id, conversation=conversation
+        )
+        if client is None:
+            raise HTTPException(status_code=502, detail="no runner available for code runs")
+        return client
+
+    @router.post(
+        "/sessions/{session_id}/code-runs",
+        status_code=202,
+        response_model=None,
+        # The flag check runs first so a disabled deployment answers 404 to everyone.
+        dependencies=[Depends(_require_code_block_run), Depends(require_json_content_type)],
+    )
+    async def start_code_run(request: Request, session_id: str) -> Any:
+        """
+        Run a code block from an assistant message on the session's runner.
+
+        Owner-only. Body: ``message_id``, ``block_hash`` (SHA-256 hex of
+        ``code``), ``language`` (``shell`` / ``python`` / ``node``), ``code``,
+        optional ``timeout`` (seconds, default 120) and ``approved`` (the
+        owner confirmed a policy ASK).
+
+        :returns: 202 ``{"run_id"}``; 403 ``policy_denied``, 409
+            ``needs_approval`` / ``copy_on_write``, 429 ``too_many_runs``.
+        """
+        user_id, conversation = await _owner_conversation(request, session_id)
+        try:
+            body = await request.json()
+        except ValueError as exc:
+            raise _invalid("Request body must be JSON") from exc
+        if not isinstance(body, dict):
+            raise _invalid("Request body must be a JSON object")
+
+        language = body.get("language")
+        if not isinstance(language, str) or language not in _CODE_RUN_LANGUAGES:
+            raise _invalid("language must be one of shell, python, node")
+        code = body.get("code")
+        if not isinstance(code, str) or not code.strip():
+            raise _invalid("code must be a non-empty string")
+        if len(code.encode("utf-8")) > CODE_RUN_MAX_CODE_BYTES:
+            raise _invalid("code must be at most 64 KiB")
+        if body.get("block_hash") != hashlib.sha256(code.encode("utf-8")).hexdigest():
+            raise _invalid("block_hash does not match code")
+
+        message_id = body.get("message_id")
+        message = (
+            await asyncio.to_thread(conversation_store.get_item, session_id, message_id)
+            if isinstance(message_id, str) and message_id
+            else None
+        )
+        message_text = (
+            _message_text(message.data.content)
+            if message is not None
+            and isinstance(message.data, MessageData)
+            and message.data.role == "assistant"
+            else None
+        )
+        if message_text is None or code not in message_text:
+            raise _invalid("code does not appear in the assistant message")
+
+        runner_client = await _runner_client(session_id, conversation)
+        try:
+            listing = await runner_client.get(
+                f"/v1/sessions/{session_id}/code-runs",
+                params={"status": "running"},
+                timeout=_RUNNER_CALL_TIMEOUT_S,
+            )
+        except (httpx.HTTPError, ConnectionError) as exc:
+            raise HTTPException(status_code=502, detail="runner code-run listing failed") from exc
+        if listing.status_code >= 400:
+            raise HTTPException(status_code=502, detail="runner code-run listing failed")
+        runner_state = listing.json()
+        if runner_state.get("copy_on_write"):
+            return _refusal(
+                409,
+                "copy_on_write",
+                "Code runs are unavailable in sessions whose sandbox uses copy-on-write roots",
+            )
+
+        timeout = body.get("timeout", CODE_RUN_DEFAULT_TIMEOUT_S)
+        if (
+            not isinstance(timeout, int)
+            or isinstance(timeout, bool)
+            or not 1 <= timeout <= CODE_RUN_MAX_TIMEOUT_S
+        ):
+            raise _invalid("timeout must be an integer from 1 to 600 seconds")
+        if len(runner_state.get("data") or []) >= CODE_RUN_MAX_RUNNING:
+            return _refusal(429, "too_many_runs", "At most 4 code runs per session")
+
+        command = derive_code_run_command(
+            language, code, console=is_console_block(message_text, code)
+        )
+        run_id = f"run_{secrets.token_hex(12)}"
+        add_audit_attrs(
+            code_run_id=run_id, code_run_language=language, code_run_command_length=len(command)
+        )
+        actor = {"initiated_by": "user"}
+        if user_id is not None:
+            actor = {"run_as": user_id, **actor}
+        result, engine = await _evaluate_run_policy(
+            session_id,
+            conversation,
+            agent_store,
+            conversation_store,
+            command=command,
+            timeout=timeout,
+            actor=actor,
+        )
+        action = result.action if result is not None else PolicyAction.ALLOW
+        add_audit_attrs(code_run_policy_decision=action.value)
+        approved_by: str | None = None
+        if result is not None and action == PolicyAction.DENY:
+            return _refusal(403, "policy_denied", result.reason)
+        if result is not None and action == PolicyAction.ASK:
+            if body.get("approved") is not True:
+                return _refusal(409, "needs_approval", result.reason)
+            approved_by = user_id or "owner"
+            add_audit_attrs(code_run_approved_by=approved_by)
+            # Side effects an ASKing policy withheld land once the owner approves.
+            if engine is not None and result.set_labels:
+                engine.apply_label_writes(result.set_labels)
+            if engine is not None and result.state_updates:
+                with contextlib.suppress(ConversationNotFoundError):
+                    engine.apply_state_updates(result.state_updates)
+
+        try:
+            started = await runner_client.post(
+                f"/v1/sessions/{session_id}/code-runs",
+                json={
+                    "run_id": run_id,
+                    "language": language,
+                    "command": command,
+                    "timeout": timeout,
+                },
+                timeout=_RUNNER_CALL_TIMEOUT_S,
+            )
+        except (httpx.HTTPError, ConnectionError) as exc:
+            raise HTTPException(status_code=502, detail="runner code-run start failed") from exc
+        if started.status_code in (409, 429):
+            refusal = started.json()
+            return _refusal(started.status_code, refusal.get("code", ""), refusal.get("reason"))
+        if started.status_code >= 400:
+            raise HTTPException(status_code=502, detail="runner refused the code run")
+
+        item = NewConversationItem(
+            type="code_run",
+            response_id=run_id,
+            created_by=attribution_user(user_id),
+            stable_id=uuid.uuid5(uuid.NAMESPACE_URL, f"omnigent-code-run:{run_id}:started").hex,
+            data=CodeRunData(
+                run_id=run_id,
+                phase="started",
+                message_id=message_id,
+                block_hash=body["block_hash"],
+                language=language,
+                command=command,
+                timeout=timeout,
+                approved_by=approved_by,
+                started_at=int(time.time()),
+            ),
+        )
+        [persisted] = await asyncio.to_thread(conversation_store.append, session_id, [item])
+        _publish_code_run_item(session_id, persisted)
+        return JSONResponse(status_code=202, content={"run_id": run_id})
+
+    @router.post(
+        "/sessions/{session_id}/code-runs/{run_id}/stop",
+        response_model=None,
+        dependencies=[Depends(_require_code_block_run), Depends(require_json_content_type)],
+    )
+    async def stop_code_run(request: Request, session_id: str, run_id: str) -> Any:
+        """
+        Stop a running code run. Owner-only.
+
+        Proxied to the runner like a terminal close; a finished or unknown
+        run returns 200 and nothing happens.
+
+        :returns: ``{"stopped": bool}``.
+        """
+        _, conversation = await _owner_conversation(request, session_id)
+        add_audit_attrs(code_run_id=run_id)
+        runner_client = await _runner_client(session_id, conversation)
+        try:
+            response = await runner_client.post(
+                f"/v1/sessions/{session_id}/code-runs/{run_id}/stop",
+                json={},
+                timeout=_RUNNER_CALL_TIMEOUT_S,
+            )
+        except (httpx.HTTPError, ConnectionError) as exc:
+            raise HTTPException(status_code=502, detail="runner code-run stop failed") from exc
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail="runner code-run stop failed")
+        return {"stopped": bool(response.json().get("stopped"))}

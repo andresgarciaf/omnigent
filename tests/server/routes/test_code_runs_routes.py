@@ -1,0 +1,610 @@
+"""Server routes that start and stop chat code runs.
+
+Mirrors ``test_shell_permission_gate.py``: a code run executes on the
+owner's runner, so only the owner (or an admin) may start or stop one, and
+every refused caller is turned away before the runner is called.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from collections.abc import AsyncIterator, Iterator
+from typing import Any
+
+import httpx
+import pytest
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+from omnigent.entities import CodeRunData, ConversationItem, MessageData, NewConversationItem
+from omnigent.errors import OmnigentError
+from omnigent.policies.types import EvaluationContext, PolicyResult
+from omnigent.runtime import _globals, set_runner_client, set_runner_router
+from omnigent.runtime import session_stream as session_stream_mod
+from omnigent.server.auth import UnifiedAuthProvider
+from omnigent.server.feature_flags import FEATURES_ENV_VAR, resolve_feature_flags
+from omnigent.server.routes.sessions import create_sessions_router, routes_code_runs
+from omnigent.server.routes.sessions.routes_code_runs import (
+    derive_code_run_command,
+    is_console_block,
+)
+from omnigent.spec.types import PolicyAction
+from tests.server.routes.test_shell_permission_gate import (
+    _StubAgentStore,
+    _StubConversationStore,
+    _StubPermissionStore,
+)
+
+_SESSION = "conv_share"
+_RUNS = f"/v1/sessions/{_SESSION}/code-runs"
+_OWNER = {"X-Forwarded-Email": "real-owner@example.com"}
+_CODE = "$ echo hi\n$ ls"
+_MESSAGE_TEXT = (
+    f"Try this:\n\n```bash\n{_CODE}\n```\n\nand this:\n\n```console\n$ pwd\n/tmp\n```\n"
+)
+
+
+def _hash(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+class _ItemStore(_StubConversationStore):
+    """Conversation stub that also stores items."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.items: dict[str, ConversationItem] = {}
+        self.appended: list[NewConversationItem] = []
+
+    def add_message(self, item_id: str, role: str, text: str) -> None:
+        self.items[item_id] = ConversationItem(
+            id=item_id,
+            type="message",
+            status="completed",
+            response_id="resp_1",
+            created_at=0,
+            data=MessageData(
+                role=role,  # type: ignore[arg-type]
+                agent="coder" if role == "assistant" else None,
+                content=[{"type": "output_text", "text": text}],
+            ),
+        )
+
+    def get_item(self, conversation_id: str, item_id: str) -> ConversationItem | None:
+        del conversation_id
+        return self.items.get(item_id)
+
+    def append(
+        self, conversation_id: str, items: list[NewConversationItem]
+    ) -> list[ConversationItem]:
+        del conversation_id
+        self.appended.extend(items)
+        return [
+            ConversationItem(
+                id=item.stable_id or "ci_new",
+                type=item.type,
+                status="completed",
+                response_id=item.response_id,
+                created_at=0,
+                data=item.data,
+                created_by=item.created_by,
+            )
+            for item in items
+        ]
+
+
+class _RunnerClient:
+    """Runner client that records calls and serves a scripted run listing."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, Any]] = []
+        self.running: list[dict[str, Any]] = []
+        self.copy_on_write = False
+        self.start_status = 202
+
+    def _record(self, method: str, url: str, body: Any = None) -> None:
+        self.calls.append((method, url, body))
+
+    async def get(
+        self, url: str, *, params: Any = None, timeout: float | None = None
+    ) -> httpx.Response:
+        del timeout
+        self._record("GET", url, params)
+        return httpx.Response(
+            200,
+            json={"object": "list", "data": self.running, "copy_on_write": self.copy_on_write},
+            request=httpx.Request("GET", url),
+        )
+
+    async def post(
+        self, url: str, *, json: Any = None, timeout: float | None = None
+    ) -> httpx.Response:
+        del timeout
+        self._record("POST", url, json)
+        if url.endswith("/stop"):
+            return httpx.Response(200, json={"stopped": True}, request=httpx.Request("POST", url))
+        return httpx.Response(
+            self.start_status,
+            json={"run_id": (json or {}).get("run_id"), "code": "too_many_runs"},
+            request=httpx.Request("POST", url),
+        )
+
+
+class _RoutedRunner:
+    def __init__(self, client: _RunnerClient) -> None:
+        self.runner_id = "runner_one"
+        self.client = client
+
+
+class _FakeRunnerRouter:
+    def __init__(self, client: _RunnerClient) -> None:
+        self.client = client
+
+    def client_for_session_resources(
+        self, session_id: str, *, conversation: Any = None
+    ) -> _RoutedRunner:
+        del session_id, conversation
+        return _RoutedRunner(self.client)
+
+
+@pytest.fixture
+def runner() -> Iterator[_RunnerClient]:
+    prior_client = _globals._runner_client
+    prior_router = _globals._runner_router
+    client = _RunnerClient()
+    set_runner_client(None)
+    set_runner_router(_FakeRunnerRouter(client))  # type: ignore[arg-type]
+    yield client
+    set_runner_client(prior_client)
+    set_runner_router(prior_router)
+
+
+@pytest.fixture
+def store() -> _ItemStore:
+    conv_store = _ItemStore()
+    conv_store.add(_SESSION)
+    conv_store.add_message("msg_1", "assistant", _MESSAGE_TEXT)
+    conv_store.add_message("msg_user", "user", _MESSAGE_TEXT)
+    return conv_store
+
+
+@pytest.fixture
+def published(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        session_stream_mod, "publish", lambda session_id, event: events.append(event)
+    )
+    return events
+
+
+@pytest.fixture
+def policy(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Replace the policy evaluation with a scripted verdict; records its inputs."""
+    state: dict[str, Any] = {"result": None, "calls": []}
+
+    async def evaluate(
+        session_id: str,
+        conversation: Any,
+        agent_store: Any,
+        conversation_store: Any,
+        **kwargs: Any,
+    ) -> Any:
+        state["calls"].append(kwargs)
+        return state["result"], None
+
+    monkeypatch.setattr(routes_code_runs, "_evaluate_run_policy", evaluate)
+    return state
+
+
+def _app(store: _ItemStore, *, flag_on: bool = True) -> FastAPI:
+    perm_store = _StubPermissionStore()
+    perm_store.add_grant("owner@example.com", _SESSION, 2)
+    perm_store.add_grant("viewer@example.com", _SESSION, 1)
+    perm_store.add_grant("real-owner@example.com", _SESSION, 4)
+    perm_store.add_admin("admin@example.com")
+    application = FastAPI()
+    application.state.feature_flags = resolve_feature_flags(
+        {FEATURES_ENV_VAR: "code_block_run" if flag_on else ""}
+    )
+
+    @application.exception_handler(OmnigentError)
+    async def _handle_omnigent_error(request: Request, exc: OmnigentError) -> JSONResponse:
+        del request
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={"error": {"code": exc.code, "message": exc.message}},
+        )
+
+    application.include_router(
+        create_sessions_router(
+            store,  # type: ignore[arg-type]
+            _StubAgentStore(),  # type: ignore[arg-type]
+            auth_provider=UnifiedAuthProvider(source="header", local_single_user=False),
+            permission_store=perm_store,  # type: ignore[arg-type]
+        ),
+        prefix="/v1",
+    )
+    return application
+
+
+@pytest.fixture
+async def client(store: _ItemStore, runner: _RunnerClient) -> AsyncIterator[httpx.AsyncClient]:
+    del runner
+    transport = httpx.ASGITransport(app=_app(store))
+    async with httpx.AsyncClient(transport=transport, base_url="http://server") as c:
+        yield c
+
+
+def _body(**overrides: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "message_id": "msg_1",
+        "block_hash": _hash(_CODE),
+        "language": "shell",
+        "code": _CODE,
+    }
+    body.update(overrides)
+    if "code" in overrides and "block_hash" not in overrides:
+        body["block_hash"] = _hash(overrides["code"])
+    return body
+
+
+def _runner_starts(runner: _RunnerClient) -> list[tuple[str, str, Any]]:
+    return [call for call in runner.calls if call[0] == "POST" and call[1] == _RUNS]
+
+
+# ── Command derivation ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("language", "code", "console", "expected"),
+    [
+        ("shell", "$ echo hi\n% ls -la\nplain", False, "echo hi\nls -la\nplain"),
+        ("shell", "$ echo hi\nhi\n$ ls\nfile.txt", True, "echo hi\nls"),
+        ("python", "$ not a prompt\nprint(1)", False, "$ not a prompt\nprint(1)"),
+        ("node", "% x", False, "% x"),
+    ],
+    ids=["shell-prompts", "console-output", "python", "node"],
+)
+def test_derive_code_run_command(language: str, code: str, console: bool, expected: str) -> None:
+    assert derive_code_run_command(language, code, console=console) == expected
+
+
+def test_is_console_block_finds_the_fence_tag() -> None:
+    assert is_console_block(_MESSAGE_TEXT, "$ pwd\n/tmp") is True
+    assert is_console_block(_MESSAGE_TEXT, _CODE) is False
+
+
+# ── Gate: refused callers never reach the runner ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_flag_off_returns_404_before_anything_else(
+    store: _ItemStore, runner: _RunnerClient
+) -> None:
+    transport = httpx.ASGITransport(app=_app(store, flag_on=False))
+    async with httpx.AsyncClient(transport=transport, base_url="http://server") as off:
+        start = await off.post(_RUNS, json=_body())
+        stop = await off.post(f"{_RUNS}/run_1/stop", json={})
+        unauthenticated = await off.post(
+            _RUNS, content="x", headers={"Content-Type": "text/plain"}
+        )
+    assert (start.status_code, stop.status_code, unauthenticated.status_code) == (404, 404, 404)
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "status"),
+    [
+        ({}, 401),
+        ({"X-Forwarded-Email": "viewer@example.com"}, 403),
+        ({"X-Forwarded-Email": "owner@example.com"}, 403),
+    ],
+    ids=["unauthenticated", "read-only", "edit"],
+)
+async def test_non_owners_are_refused_before_the_runner(
+    client: httpx.AsyncClient, runner: _RunnerClient, headers: dict[str, str], status: int
+) -> None:
+    start = await client.post(_RUNS, json=_body(), headers=headers)
+    stop = await client.post(f"{_RUNS}/run_1/stop", json={}, headers=headers)
+
+    assert (start.status_code, stop.status_code) == (status, status), start.text
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_mutating_routes_require_a_json_content_type(
+    client: httpx.AsyncClient, runner: _RunnerClient
+) -> None:
+    response = await client.post(
+        _RUNS, content="{}", headers={**_OWNER, "Content-Type": "text/plain"}
+    )
+
+    assert response.status_code == 415
+    assert runner.calls == []
+
+
+# ── Start: checks in order ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        _body(language="ruby"),
+        _body(code=""),
+        _body(code="x" * (64 * 1024 + 1)),
+        _body(block_hash="0" * 64),
+        _body(code="echo not in the message"),
+        _body(message_id="msg_user"),
+        _body(message_id="msg_missing"),
+        _body(timeout=0),
+        _body(timeout=601),
+        _body(timeout="60"),
+    ],
+    ids=[
+        "language",
+        "empty",
+        "oversize",
+        "hash",
+        "not-verbatim",
+        "user-message",
+        "unknown-message",
+        "timeout-low",
+        "timeout-high",
+        "timeout-type",
+    ],
+)
+async def test_invalid_starts_return_400_without_starting(
+    client: httpx.AsyncClient, runner: _RunnerClient, policy: dict[str, Any], body: dict[str, Any]
+) -> None:
+    response = await client.post(_RUNS, json=body, headers=_OWNER)
+
+    assert response.status_code == 400, response.text
+    assert _runner_starts(runner) == []
+    assert policy["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_copy_on_write_sessions_get_409(
+    client: httpx.AsyncClient, runner: _RunnerClient, policy: dict[str, Any]
+) -> None:
+    runner.copy_on_write = True
+
+    response = await client.post(_RUNS, json=_body(timeout=0), headers=_OWNER)
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "copy_on_write"
+    assert _runner_starts(runner) == []
+
+
+@pytest.mark.asyncio
+async def test_a_fifth_running_run_gets_429(
+    client: httpx.AsyncClient, runner: _RunnerClient, policy: dict[str, Any]
+) -> None:
+    runner.running = [{"run_id": f"run_{index}", "offset": 0, "output": []} for index in range(4)]
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert response.status_code == 429
+    assert response.json()["code"] == "too_many_runs"
+    assert _runner_starts(runner) == []
+    assert policy["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_runner_limit_still_reaches_the_client_as_429(
+    client: httpx.AsyncClient, runner: _RunnerClient, policy: dict[str, Any], store: _ItemStore
+) -> None:
+    runner.start_status = 429
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert response.status_code == 429
+    assert store.appended == []
+
+
+# ── Policy ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_policy_deny_returns_403(
+    client: httpx.AsyncClient, runner: _RunnerClient, policy: dict[str, Any], store: _ItemStore
+) -> None:
+    policy["result"] = PolicyResult(action=PolicyAction.DENY, reason="No shell here.")
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert (response.status_code, response.json()) == (
+        403,
+        {"code": "policy_denied", "reason": "No shell here."},
+    )
+    assert _runner_starts(runner) == []
+    assert store.appended == []
+
+
+@pytest.mark.asyncio
+async def test_policy_ask_needs_approval(
+    client: httpx.AsyncClient, runner: _RunnerClient, policy: dict[str, Any]
+) -> None:
+    policy["result"] = PolicyResult(action=PolicyAction.ASK, reason="Confirm network access.")
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert (response.status_code, response.json()) == (
+        409,
+        {"code": "needs_approval", "reason": "Confirm network access."},
+    )
+    assert _runner_starts(runner) == []
+
+
+@pytest.mark.asyncio
+async def test_approved_ask_runs_and_records_the_approver(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    store: _ItemStore,
+    published: list[dict[str, Any]],
+) -> None:
+    policy["result"] = PolicyResult(action=PolicyAction.ASK, reason="Confirm.")
+
+    response = await client.post(_RUNS, json=_body(approved=True), headers=_OWNER)
+
+    assert response.status_code == 202, response.text
+    data = store.appended[0].data
+    assert isinstance(data, CodeRunData)
+    assert data.approved_by == "real-owner@example.com"
+    assert policy["calls"] == [
+        {
+            "command": "echo hi\nls",
+            "timeout": 120,
+            "actor": {"run_as": "real-owner@example.com", "initiated_by": "user"},
+        }
+    ]
+
+
+# ── Success ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["real-owner@example.com", "admin@example.com"])
+async def test_owner_start_forwards_saves_and_publishes(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    store: _ItemStore,
+    published: list[dict[str, Any]],
+    caller: str,
+) -> None:
+    response = await client.post(
+        _RUNS, json=_body(timeout=30), headers={"X-Forwarded-Email": caller}
+    )
+
+    assert response.status_code == 202, response.text
+    run_id = response.json()["run_id"]
+    assert run_id.startswith("run_")
+    assert [call[0] for call in runner.calls] == ["GET", "POST"]
+    assert runner.calls[1][2] == {
+        "run_id": run_id,
+        "language": "shell",
+        "command": "echo hi\nls",
+        "timeout": 30,
+    }
+    [item] = store.appended
+    assert item.type == "code_run"
+    assert isinstance(item.data, CodeRunData)
+    assert item.data.model_dump(exclude_none=True) == {
+        "run_id": run_id,
+        "phase": "started",
+        "message_id": "msg_1",
+        "block_hash": _hash(_CODE),
+        "language": "shell",
+        "command": "echo hi\nls",
+        "timeout": 30,
+        "started_at": item.data.started_at,
+    }
+    assert [event["type"] for event in published] == ["session.code_run.started"]
+    assert published[0]["item"]["run_id"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_console_block_runs_only_its_prompt_lines(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    published: list[dict[str, Any]],
+) -> None:
+    response = await client.post(_RUNS, json=_body(code="$ pwd\n/tmp"), headers=_OWNER)
+
+    assert response.status_code == 202, response.text
+    assert runner.calls[-1][2]["command"] == "pwd"
+
+
+@pytest.mark.asyncio
+async def test_real_policy_path_evaluates_sys_os_shell_as_the_user(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    store: _ItemStore,
+    published: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The policy context carries the tool, arguments and user-initiated actor."""
+    from omnigent.server.routes import sessions as sessions_facade
+
+    seen: list[EvaluationContext] = []
+
+    class _Agent:
+        id = "ag_test"
+        bundle_location = "/bundle"
+        operator_authored = False
+
+    class _Loaded:
+        spec = object()
+
+    class _Caps:
+        default_policies: list[object] = []
+        policy_llm_connection_factory = None
+        llm = None
+
+    class _Engine:
+        async def evaluate(
+            self, ctx: EvaluationContext, *, read_only: bool = False
+        ) -> PolicyResult:
+            seen.append(ctx)
+            return PolicyResult(action=PolicyAction.DENY, reason="denied by test")
+
+    class _AgentStore:
+        def get(self, agent_id: str) -> _Agent:
+            return _Agent()
+
+    class _AgentCache:
+        def load(self, *args: Any, **kwargs: Any) -> _Loaded:
+            return _Loaded()
+
+    monkeypatch.setattr(sessions_facade, "get_agent_cache", lambda: _AgentCache())
+    monkeypatch.setattr(sessions_facade, "get_caps", lambda: _Caps())
+    monkeypatch.setattr(routes_code_runs, "any_policies_apply", lambda **kwargs: True)
+    monkeypatch.setattr(routes_code_runs, "build_policy_engine", lambda **kwargs: _Engine())
+
+    conversation = store.get_conversation(_SESSION)
+    assert conversation is not None
+    result, _ = await routes_code_runs._evaluate_run_policy(
+        _SESSION,
+        conversation,
+        _AgentStore(),  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        command="echo hi",
+        timeout=120,
+        actor={"run_as": "real-owner@example.com", "initiated_by": "user"},
+    )
+
+    assert result is not None and result.action == PolicyAction.DENY
+    [ctx] = seen
+    assert ctx.tool_name == "sys_os_shell"
+    assert ctx.content == {
+        "name": "sys_os_shell",
+        "arguments": {"command": "echo hi", "timeout": 120},
+    }
+    assert ctx.actor == {"run_as": "real-owner@example.com", "initiated_by": "user"}
+
+
+@pytest.mark.asyncio
+async def test_no_agent_means_no_policy_and_the_run_starts(
+    client: httpx.AsyncClient, runner: _RunnerClient, published: list[dict[str, Any]]
+) -> None:
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert response.status_code == 202, response.text
+
+
+# ── Stop ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_owner_stop_is_proxied_and_unknown_runs_return_200(
+    client: httpx.AsyncClient, runner: _RunnerClient
+) -> None:
+    response = await client.post(f"{_RUNS}/run_unknown/stop", json={}, headers=_OWNER)
+
+    assert response.status_code == 200
+    assert runner.calls == [("POST", f"{_RUNS}/run_unknown/stop", {})]
