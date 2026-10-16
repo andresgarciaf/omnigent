@@ -608,3 +608,63 @@ async def test_owner_stop_is_proxied_and_unknown_runs_return_200(
 
     assert response.status_code == 200
     assert runner.calls == [("POST", f"{_RUNS}/run_unknown/stop", {})]
+
+
+# ── Snapshot on subscribe ─────────────────────────────────────────
+
+
+class _StateRequest:
+    def __init__(self, flag_on: bool) -> None:
+        app = FastAPI()
+        app.state.feature_flags = resolve_feature_flags(
+            {FEATURES_ENV_VAR: "code_block_run" if flag_on else ""}
+        )
+        self.app = app
+
+
+@pytest.mark.asyncio
+async def test_subscribe_snapshot_sends_one_event_per_running_run(runner: _RunnerClient) -> None:
+    runner.running = [
+        {"run_id": "run_a", "offset": 3, "output": [{"stream": "stdout", "text": "abc"}]},
+        {"run_id": "run_b", "offset": 0, "output": []},
+    ]
+
+    events = await routes_code_runs.code_run_snapshot_events(
+        _StateRequest(flag_on=True),  # type: ignore[arg-type]
+        runner,  # type: ignore[arg-type]
+        _SESSION,
+    )
+
+    assert events == [
+        {
+            "type": "session.code_run.snapshot",
+            "sequence_number": None,
+            "run_id": "run_a",
+            "offset": 3,
+            "output": [{"stream": "stdout", "text": "abc"}],
+        },
+        {
+            "type": "session.code_run.snapshot",
+            "sequence_number": None,
+            "run_id": "run_b",
+            "offset": 0,
+            "output": [],
+        },
+    ]
+    assert runner.calls == [("GET", _RUNS, {"status": "running"})]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_snapshot_skips_the_runner_when_the_flag_is_off(
+    runner: _RunnerClient,
+) -> None:
+    runner.running = [{"run_id": "run_a", "offset": 0, "output": []}]
+
+    events = await routes_code_runs.code_run_snapshot_events(
+        _StateRequest(flag_on=False),  # type: ignore[arg-type]
+        runner,  # type: ignore[arg-type]
+        _SESSION,
+    )
+
+    assert events == []
+    assert runner.calls == []

@@ -43,6 +43,7 @@ from omnigent.server.routes._sessions.helpers import (
     _message_text,
     _publish_code_run_item,
 )
+from omnigent.server.schemas import SessionCodeRunSnapshotEvent
 from omnigent.spec.types import Phase, PolicyAction
 from omnigent.stores import AgentStore, ConversationStore
 from omnigent.stores.conversation_store import ConversationNotFoundError
@@ -155,6 +156,43 @@ async def _evaluate_run_policy(
     return await engine.evaluate(ctx), engine
 
 
+def _code_block_run_enabled(request: Request) -> bool:
+    flags = getattr(request.app.state, "feature_flags", None)
+    return flags is not None and flags.enabled(Feature.CODE_BLOCK_RUN)
+
+
+async def code_run_snapshot_events(
+    request: Request, runner_client: httpx.AsyncClient, session_id: str
+) -> list[dict[str, Any]]:
+    """
+    Build one ``session.code_run.snapshot`` per run the runner has going.
+
+    Used by the stream's connect snapshot, so a viewer that subscribes
+    mid-run sees the output so far. Empty when the flag is off.
+
+    :param request: The subscribing request (for the feature flags).
+    :param runner_client: The session's runner client.
+    :param session_id: Session/conversation identifier.
+    :returns: Snapshot event dicts.
+    """
+    if not _code_block_run_enabled(request):
+        return []
+    response = await runner_client.get(
+        f"/v1/sessions/{session_id}/code-runs", params={"status": "running"}
+    )
+    if response.status_code != 200:
+        return []
+    return [
+        SessionCodeRunSnapshotEvent(
+            type="session.code_run.snapshot",
+            run_id=run["run_id"],
+            offset=run["offset"],
+            output=run["output"],
+        ).model_dump()
+        for run in response.json().get("data", [])
+    ]
+
+
 def register_code_runs_routes(
     router: APIRouter,
     *,
@@ -166,8 +204,7 @@ def register_code_runs_routes(
     """Register ``/sessions/{id}/code-runs`` routes on *router*."""
 
     def _require_code_block_run(request: Request) -> None:
-        flags = getattr(request.app.state, "feature_flags", None)
-        if flags is None or not flags.enabled(Feature.CODE_BLOCK_RUN):
+        if not _code_block_run_enabled(request):
             raise HTTPException(status_code=404, detail="Not Found")
 
     async def _owner_conversation(
