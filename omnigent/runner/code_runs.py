@@ -22,7 +22,11 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from omnigent.entities.conversation import CODE_RUN_OUTPUT_MAX_CHARS, code_run_source_id
+from omnigent.entities.conversation import (
+    CODE_RUN_OUTPUT_MAX_CHARS,
+    CODE_RUN_START_REFUSALS,
+    code_run_source_id,
+)
 from omnigent.inner.async_utils import run_sync_cleanup
 
 if TYPE_CHECKING:
@@ -43,7 +47,7 @@ _FINISH_POST_MAX_BACKOFF_S = 30.0
 _FINISH_POST_TIMEOUT_S = 30.0
 
 _COPY_ON_WRITE_REFUSAL = {
-    "code": "copy_on_write",
+    "code": CODE_RUN_START_REFUSALS[409],
     "reason": "Code runs are unavailable in sessions whose sandbox uses copy-on-write roots",
 }
 
@@ -431,7 +435,10 @@ def register_code_run_routes(
         ):
             return JSONResponse(
                 status_code=400,
-                content={"code": "invalid_input", "reason": "Malformed code run request"},
+                content={
+                    "code": CODE_RUN_START_REFUSALS[400],
+                    "reason": "Malformed code run request",
+                },
             )
         if await uses_copy_on_write(session_id):
             return JSONResponse(status_code=409, content=_COPY_ON_WRITE_REFUSAL)
@@ -441,7 +448,8 @@ def register_code_run_routes(
             )
         except CodeRunLimitError as exc:
             return JSONResponse(
-                status_code=429, content={"code": "too_many_runs", "reason": str(exc)}
+                status_code=429,
+                content={"code": CODE_RUN_START_REFUSALS[429], "reason": str(exc)},
             )
         return JSONResponse(status_code=202, content={"run_id": run_id})
 

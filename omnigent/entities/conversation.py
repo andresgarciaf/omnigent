@@ -728,6 +728,15 @@ def code_run_source_id(run_id: str, phase: Literal["started", "finished"]) -> st
     return f"code_run:{run_id}:{phase}"
 
 
+# The runner's code-run route answers these (status: body ``code``) only when it
+# refuses a run before starting it; any other reply may follow a started run.
+CODE_RUN_START_REFUSALS: dict[int, str] = {
+    400: "invalid_input",
+    409: "copy_on_write",
+    429: "too_many_runs",
+}
+
+
 _CODE_RUN_PHASE_FIELDS: dict[str, tuple[str, ...]] = {
     "started": ("message_id", "block_hash", "language", "command", "timeout", "started_at"),
     "finished": ("status", "duration_ms", "output", "truncated"),

@@ -110,6 +110,14 @@ class _ItemStore(_StubConversationStore):
         return persisted
 
 
+# What the runner's code-run route itself answers when it refuses before starting.
+_RUNNER_START_BODIES: dict[int, dict[str, str]] = {
+    400: {"code": "invalid_input", "reason": "Malformed code run request"},
+    409: {"code": "copy_on_write", "reason": "copy-on-write sandbox"},
+    429: {"code": "too_many_runs", "reason": "At most 4 code runs per session"},
+}
+
+
 class _RunnerClient:
     """Runner client that records calls and serves a scripted run listing."""
 
@@ -118,6 +126,8 @@ class _RunnerClient:
         self.running: list[dict[str, Any]] = []
         self.copy_on_write = False
         self.start_status = 202
+        self.start_body: Any = None
+        self.start_content: bytes | None = None
         self.start_error: Exception | None = None
         self.stop_error: Exception | None = None
         self.store: _ItemStore | None = None
@@ -150,11 +160,15 @@ class _RunnerClient:
             raise self.stop_error
         if url.endswith("/stop"):
             return httpx.Response(200, json={"stopped": True}, request=httpx.Request("POST", url))
-        return httpx.Response(
-            self.start_status,
-            json={"run_id": (json or {}).get("run_id"), "code": "too_many_runs"},
-            request=httpx.Request("POST", url),
-        )
+        request = httpx.Request("POST", url)
+        if self.start_content is not None:
+            return httpx.Response(self.start_status, content=self.start_content, request=request)
+        body = self.start_body
+        if body is None:
+            body = _RUNNER_START_BODIES.get(self.start_status, {"detail": "upstream error"})
+            if self.start_status == 202:
+                body = {"run_id": (json or {}).get("run_id")}
+        return httpx.Response(self.start_status, json=body, request=request)
 
 
 class _RoutedRunner:
@@ -472,9 +486,9 @@ async def test_the_runner_limit_still_reaches_the_client_as_429(
     [
         (429, None, 429),
         (409, None, 409),
-        (500, None, 502),
+        (400, None, 400),
     ],
-    ids=["runner-limit", "runner-copy-on-write", "runner-error"],
+    ids=["runner-limit", "runner-copy-on-write", "runner-invalid-input"],
 )
 async def test_a_refused_forward_saves_a_failed_finished_item(
     client: httpx.AsyncClient,
@@ -1087,3 +1101,92 @@ async def test_the_runners_real_finished_lands_after_an_ambiguous_forward(
         "session.code_run.started",
         "session.code_run.finished",
     ]
+
+
+async def _save_runner_finished(store: _ItemStore, run_id: str) -> str:
+    """Persist the finished item the runner posts once a stopped run ends."""
+    from omnigent.entities.conversation import code_run_source_id
+    from omnigent.server.routes._sessions.orchestration import (
+        _persist_external_conversation_item,
+    )
+    from omnigent.server.schemas import SessionEventInput
+
+    conversation = store.get_conversation(_SESSION)
+    assert conversation is not None
+    return await _persist_external_conversation_item(
+        _SESSION,
+        conversation,
+        SessionEventInput(
+            type="external_conversation_item",
+            data={
+                "item_type": "code_run",
+                "item_data": {
+                    "run_id": run_id,
+                    "phase": "finished",
+                    "status": "stopped",
+                    "exit_code": None,
+                    "duration_ms": 40,
+                    "output": [{"stream": "stdout", "text": "partial"}],
+                    "truncated": False,
+                },
+                "response_id": run_id,
+                "source_id": code_run_source_id(run_id, "finished"),
+            },
+        ),
+        store,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("start_status", "start_body", "start_content"),
+    [
+        (500, {"detail": "Internal Server Error"}, None),
+        (502, {"detail": "runner tunnel closed"}, None),
+        (503, {"error": {"code": "runner_unavailable"}}, None),
+        (409, {"detail": "conflict"}, None),
+        (429, {"message": "rate limited by proxy"}, None),
+        (409, None, b"<html>Conflict</html>"),
+        (503, None, b""),
+        (202, {"accepted": True}, None),
+    ],
+    ids=[
+        "500",
+        "502",
+        "503",
+        "409-not-runner",
+        "429-proxy",
+        "malformed-409",
+        "empty-503",
+        "202-without-run-id",
+    ],
+)
+async def test_a_non_runner_error_response_is_ambiguous(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    store: _ItemStore,
+    published: list[dict[str, Any]],
+    start_status: int,
+    start_body: Any,
+    start_content: bytes | None,
+) -> None:
+    """A response the runner route did not write may follow a started run."""
+    runner.start_status = start_status
+    runner.start_body = start_body
+    runner.start_content = start_content
+
+    response = await client.post(_RUNS, json=_body(), headers=_OWNER)
+
+    assert response.status_code == 502
+    [started] = store.appended
+    assert isinstance(started.data, CodeRunData)
+    run_id = started.data.run_id
+    assert runner.calls[-1] == ("POST", f"{_RUNS}/{run_id}/stop", {})
+    assert [event["type"] for event in published] == ["session.code_run.started"]
+
+    # Nothing synthetic sits under the runner's stable id, so its real result lands.
+    item_id = await _save_runner_finished(store, run_id)
+    finished = store.items[item_id].data
+    assert isinstance(finished, CodeRunData)
+    assert (finished.phase, finished.status) == ("finished", "stopped")

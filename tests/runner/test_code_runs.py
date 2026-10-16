@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from omnigent.entities.conversation import code_run_source_id
+from omnigent.entities.conversation import CODE_RUN_START_REFUSALS, code_run_source_id
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
 from omnigent.runner import create_runner_app
 from omnigent.runner.code_runs import (
@@ -416,13 +416,13 @@ async def test_routes_refuse_copy_on_write_and_a_fifth_run(
 
     copy_on_write["value"] = True
     refused = await client.post(base, json=_run_body())
-    assert (refused.status_code, refused.json()["code"]) == (409, "copy_on_write")
+    assert (refused.status_code, refused.json()["code"]) == (409, CODE_RUN_START_REFUSALS[409])
     copy_on_write["value"] = False
 
     for index in range(4):
         assert (await client.post(base, json=_run_body(f"run_{index}"))).status_code == 202
     limited = await client.post(base, json=_run_body("run_4"))
-    assert (limited.status_code, limited.json()["code"]) == (429, "too_many_runs")
+    assert (limited.status_code, limited.json()["code"]) == (429, CODE_RUN_START_REFUSALS[429])
 
 
 @pytest.mark.asyncio
@@ -435,6 +435,8 @@ async def test_routes_reject_a_malformed_run(
     response = await client.post(f"/v1/sessions/{_SESSION}/code-runs", json=body)
 
     assert response.status_code == 400
+    # The server treats only these structured bodies as a run that never started.
+    assert response.json()["code"] == CODE_RUN_START_REFUSALS[400]
 
 
 class _EventRecordingServer(NullServerClient):

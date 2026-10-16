@@ -15,7 +15,7 @@ import re
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -23,7 +23,11 @@ from fastapi.responses import JSONResponse
 
 from omnigent.debug_logging import add_audit_attrs
 from omnigent.entities import CodeRunData, Conversation, MessageData, NewConversationItem
-from omnigent.entities.conversation import CodeRunOutputSegment, code_run_source_id
+from omnigent.entities.conversation import (
+    CODE_RUN_START_REFUSALS,
+    CodeRunOutputSegment,
+    code_run_source_id,
+)
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.policies.types import PolicyResult
 from omnigent.runtime import get_policy_store
@@ -171,6 +175,42 @@ def find_code_fence(message_text: str, code: str, language: str) -> CodeFence | 
         if fence_language == language:
             return CodeFence(language=language, console=tag == "console")
     return None
+
+
+# ``"started"``, ``"ambiguous"``, or a definitive ``(status, code, reason)`` refusal.
+_StartOutcome = Literal["started", "ambiguous"] | tuple[int, str, str]
+
+
+def _classify_runner_start(response: httpx.Response, run_id: str) -> _StartOutcome:
+    """
+    Decide what a runner's reply to a forwarded run proves.
+
+    Only the runner route's own structured refusals, which it sends before
+    starting a run, prove the run did not start; a 202 echoing the run id
+    proves it did. Anything else (a 5xx or other reply a tunnel or proxy may
+    have written, an unparseable body) may follow a started run.
+
+    :param response: The runner's reply to ``POST .../code-runs``.
+    :param run_id: The forwarded run's id.
+    :returns: The outcome.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return "ambiguous"
+    if not isinstance(body, dict):
+        return "ambiguous"
+    if response.status_code == 202:
+        return "started" if body.get("run_id") == run_id else "ambiguous"
+    code = body.get("code")
+    if code is not None and CODE_RUN_START_REFUSALS.get(response.status_code) == code:
+        reason = body.get("reason")
+        return (
+            response.status_code,
+            code,
+            reason if isinstance(reason, str) and reason else "The runner refused the code run",
+        )
+    return "ambiguous"
 
 
 def _invalid(message: str) -> OmnigentError:
@@ -505,7 +545,6 @@ def register_code_runs_routes(
                 started_at=int(time.time()),
             ),
         )
-        failure: tuple[int, str, str] | None = None
         try:
             started = await runner_client.post(
                 f"/v1/sessions/{session_id}/code-runs",
@@ -518,28 +557,23 @@ def register_code_runs_routes(
                 timeout=_RUNNER_CALL_TIMEOUT_S,
             )
         except (httpx.HTTPError, ConnectionError):
-            # The runner may have started the run before the answer was lost, so
-            # save no result of our own: stop it, and its real ``finished`` (or,
-            # if it never started, the interrupted state) follows.
+            outcome: _StartOutcome = "ambiguous"
+        else:
+            outcome = _classify_runner_start(started, run_id)
+        if outcome == "ambiguous":
+            # The runner may have started the run before the answer was lost or
+            # replaced (a timeout, or an error a tunnel or proxy wrote), so save
+            # no result of our own: stop it, and its real ``finished`` (or, if it
+            # never started, the interrupted state) follows.
             with contextlib.suppress(httpx.HTTPError, ConnectionError):
                 await runner_client.post(
                     f"/v1/sessions/{session_id}/code-runs/{run_id}/stop",
                     json={},
                     timeout=_RUNNER_CALL_TIMEOUT_S,
                 )
-            return _refusal(502, "runner_unavailable", "The runner could not be reached")
-        else:
-            if started.status_code in (409, 429):
-                refusal = started.json()
-                failure = (
-                    started.status_code,
-                    str(refusal.get("code", "")),
-                    str(refusal.get("reason") or "The runner refused the code run"),
-                )
-            elif started.status_code >= 400:
-                failure = (502, "runner_error", "The runner refused the code run")
-        if failure is not None:
-            status_code, code, reason = failure
+            return _refusal(502, "runner_unavailable", "The runner did not confirm the run")
+        if outcome != "started":
+            status_code, code, reason = outcome
             await _save_code_run_item(
                 session_id,
                 run_id,
