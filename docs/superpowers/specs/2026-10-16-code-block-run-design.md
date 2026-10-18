@@ -263,7 +263,13 @@ text. Input: the session's items. Rule:
    output trimmed to 10,000 characters (start and end kept, with a note giving
    the shown and total sizes);
 4. list runs that have a `started` item but no `finished` item as "still
-   running", without output.
+   running", without output, only while the runner reports them active; a
+   started-only run the runner does not list is left out (the web shows it as
+   interrupted).
+
+A user message here means a message the user sent; stored cancellation or
+undelivered markers do not count as a boundary. The notice is attached only
+when the `code_block_run` flag is on.
 
 Counting from the user's previous message, not from the agent's last item,
 means each run is reported exactly once, in the first user message after it
