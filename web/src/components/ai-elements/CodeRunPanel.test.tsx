@@ -14,7 +14,7 @@ vi.mock("@/hooks/useSession", () => ({ useSession: vi.fn() }));
 vi.mock("@/hooks/usePermissions", () => ({ useIsOwner: vi.fn(), useCanEdit: vi.fn() }));
 vi.mock("@/hooks/useIsMobileViewport", () => ({ useIsMobileViewport: vi.fn() }));
 vi.mock("@/lib/codeRuns", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/codeRuns")>()),
+  ...(await importOriginal<Record<string, unknown>>()),
   startCodeRun: vi.fn(),
   stopCodeRun: vi.fn(),
 }));
