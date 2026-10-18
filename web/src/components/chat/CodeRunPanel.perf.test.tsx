@@ -14,6 +14,20 @@ import { CodeBlockRunner } from "./CodeRunPanel";
 vi.mock("@/hooks/useSession", () => ({ useSession: vi.fn() }));
 vi.mock("@/hooks/usePermissions", () => ({ useIsOwner: vi.fn(), useCanEdit: vi.fn() }));
 vi.mock("@/hooks/useIsMobileViewport", () => ({ useIsMobileViewport: vi.fn() }));
+// Characters handed to the ANSI parser, delegating to the real component.
+const ansiParsed = vi.hoisted(() => ({ chars: 0 }));
+vi.mock("ansi-to-react", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const module = actual.default as Record<string, unknown> | ((props: unknown) => unknown);
+  const Real = (typeof module === "function" ? module : module.default) as (props: {
+    children?: string;
+  }) => unknown;
+  const Counting = (props: { children?: string }) => {
+    ansiParsed.chars += props.children?.length ?? 0;
+    return Real(props);
+  };
+  return { default: Counting };
+});
 vi.mock("@/lib/codeRuns", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, sha256Hex: vi.fn(actual.sha256Hex as (text: string) => string) };
@@ -103,6 +117,7 @@ describe("code run panel performance", () => {
     const batch = line.repeat(5);
     const timings: number[] = [];
     let offset = 0;
+    ansiParsed.chars = 0;
     const startedAt = performance.now();
     for (let index = 0; index < 500; index++) {
       const t0 = performance.now();
@@ -118,11 +133,16 @@ describe("code run panel performance", () => {
       first50AvgMs: +first50.toFixed(2),
       last50AvgMs: +last50.toFixed(2),
       chars: offset,
+      parsedChars: ansiParsed.chars,
     });
     expect(offset).toBe(100_000);
     expect(container.textContent).toContain("x".repeat(25));
-    // Linear work keeps the last batches about as cheap as the first ones.
-    expect(last50).toBeLessThan(Math.max(first50 * 4, 2));
+    // Deterministic: each batch re-parses only the open piece (at most about
+    // 4 KB), so the whole stream parses a few times its size. Re-parsing all
+    // output per batch would be about 25,000,000 characters.
+    expect(ansiParsed.chars).toBeLessThan(2_500_000);
+    // Relative only: linear work keeps the last batches about as cheap as the first.
+    expect(last50).toBeLessThan(first50 * 4);
   });
 
   it("hashes a block once however often it renders", () => {
