@@ -539,7 +539,7 @@ describe("parseEvent — response.elicitation_resolved", () => {
   });
 });
 
-describe("parseEvent — session.code_run.*", () => {
+describe("parseEvent: session.code_run.*", () => {
   it("passes the saved started and finished items through", () => {
     const item = { id: "item_1", type: "code_run", run_id: "run_1", phase: "started" };
     expect(parseEvent("session.code_run.started", { item })).toEqual({

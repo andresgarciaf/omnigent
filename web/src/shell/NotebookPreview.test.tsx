@@ -199,7 +199,7 @@ describe("NotebookPreview — invalid input", () => {
   });
 });
 
-describe("OutputView — reused for chat code run output", () => {
+describe("OutputView: reused for chat code run output", () => {
   it("keeps ANSI colors and styles stderr apart", () => {
     const { container } = render(
       <OutputView

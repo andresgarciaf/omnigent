@@ -134,7 +134,7 @@ describe("useCanEdit — safe defaults", () => {
   });
 });
 
-describe("useIsOwner — owner-only affordances", () => {
+describe("useIsOwner: owner-only affordances", () => {
   it.each([
     [2, false],
     [3, false],
