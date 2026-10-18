@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +13,20 @@ import pytest
 
 from omnigent.entities import CodeRunData, MessageData, NewConversationItem
 from omnigent.inner.native_attachments import FRAMEWORK_NOTICE_BLOCK_TYPE
-from omnigent.server.routes._sessions import orchestration
+from omnigent.server.feature_flags import Feature, FeatureFlags
+from omnigent.server.routes._sessions import common, orchestration
 from omnigent.server.schemas import SessionEventInput
 from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _code_block_run_on() -> Iterator[None]:
+    common.set_server_feature_flags(FeatureFlags(frozenset({Feature.CODE_BLOCK_RUN})))
+    yield
+    common.set_server_feature_flags(None)
+
 
 _TYPED = [{"type": "input_text", "text": "why did it fail?"}]
 
@@ -140,3 +150,33 @@ async def test_native_forward_carries_the_notice_for_harnesses_that_read_it(
     forwarded = bodies[-1]["content"]
     assert forwarded[: len(_TYPED)] == _TYPED
     assert bool(_notices(forwarded)) is delivered
+
+
+async def test_flag_off_skips_every_item_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, conv = _store_with_finished_run(tmp_path)
+    common.set_server_feature_flags(FeatureFlags())
+    real_list_items = store.list_items
+
+    def _list_items(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("type") == "code_run":
+            raise AssertionError("code-run lookup ran with the flag off")
+        return real_list_items(*args, **kwargs)
+
+    monkeypatch.setattr(store, "list_items", _list_items)
+    bodies: list[dict[str, Any]] = []
+
+    async with _capturing_runner(bodies) as runner_client:
+        await orchestration._forward_event_to_runner(
+            conv.id, conv, _message(), store, runner_client
+        )
+        await orchestration._forward_native_terminal_message(
+            runner_client,
+            conv.id,
+            dataclasses.replace(conv, labels={"omnigent.wrapper": "codex-native-ui"}),
+            _message(),
+            conversation_store=store,
+        )
+
+    assert [body["content"] for body in bodies] == [_TYPED, _TYPED]

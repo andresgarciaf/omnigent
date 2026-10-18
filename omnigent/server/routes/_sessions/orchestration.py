@@ -151,6 +151,7 @@ from omnigent.server.bundles import (
     validate_agent_bundle,
 )
 from omnigent.server.creation_logging import creation_metadata, creation_stage, session_created
+from omnigent.server.feature_flags import Feature
 from omnigent.server.host_registry import HostConnection, HostRegistry, RunnerExitReports
 from omnigent.server.managed_hosts import (
     MANAGED_REPO_LABEL_KEY,
@@ -241,6 +242,7 @@ from omnigent.server.routes._sessions.common import (  # noqa: F401
     _session_terminal_pending_cache,
     get_caps,
     get_server_runner_router,
+    server_feature_enabled,
     session_stream,
     set_server_runner_router,
 )
@@ -6119,6 +6121,8 @@ async def _with_code_run_notice(
     :returns: *content* with a text framework notice block appended, or
         *content* unchanged when there is nothing to report.
     """
+    if not server_feature_enabled(Feature.CODE_BLOCK_RUN):
+        return content
     try:
         probe = await asyncio.to_thread(
             conversation_store.list_items, session_id, limit=1, type="code_run"

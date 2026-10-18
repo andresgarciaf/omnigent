@@ -340,6 +340,7 @@ from omnigent.server.routes._sessions.common import (
     _session_terminal_pending_cache as _session_terminal_pending_cache,
     get_server_host_registry as get_server_host_registry,
     get_server_runner_router as get_server_runner_router,
+    set_server_feature_flags as set_server_feature_flags,
     set_server_host_registry as set_server_host_registry,
     set_server_runner_router as set_server_runner_router,
 )
