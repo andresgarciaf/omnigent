@@ -255,8 +255,9 @@ Client states for a run with a `started` item and no `finished` item:
 A pure function in `omnigent/runtime/code_run_context.py` builds the summary
 text. Input: the session's items. Rule:
 
-1. take `finished` code runs positioned after the end of the agent's previous
-   turn;
+1. take `finished` code runs positioned after the user's previous message
+   (the user message before the one being sent; on the first message, all
+   finished runs), skipping any run whose `started` item is missing;
 2. keep the latest run per `(message_id, block_hash)`;
 3. render each run as language, command, status, exit code, duration, and
    output trimmed to 10,000 characters (start and end kept, with a note giving
@@ -264,17 +265,37 @@ text. Input: the session's items. Rule:
 4. list runs that have a `started` item but no `finished` item as "still
    running", without output.
 
+Counting from the user's previous message, not from the agent's last item,
+means each run is reported exactly once, in the first user message after it
+finishes. That holds when a run finishes while the agent is still replying and
+when the user sends several messages in a row.
+
 The text is delivered as a framework notice, so the user's message is stored
 and shown exactly as typed.
 
-- SDK harnesses: `history_to_input_items` adds the notice when it rebuilds
-  history, so it stays in the model's context on later turns.
+- One attach point for every harness: when the server forwards the user's
+  message to the runner (the SDK and native forwarding paths in
+  `orchestration.py`), it attaches the notice to the forwarded payload. It
+  never changes the stored user item.
+- SDK harnesses: the runner keeps the notice in its in-memory session history
+  (`runner/session_history.py`), so it stays in the model's context on later
+  turns. When the runner reloads history from stored items after a restart, it
+  rebuilds each user message's notice from the saved runs using the same rule.
+  The unused `/compact` path (`history_to_input_items`) is left unchanged.
 - Claude Code (claude-native): the notice goes through the existing pending
   framework context file and the `UserPromptSubmit` hook's
-  `additionalContext`.
-- Codex (codex-native): the executor gains support for text framework notices.
+  `additionalContext`. No new mechanism is needed.
+- Codex (codex-native): the notice is wrapped in a fixed tag, and the step that
+  stores Codex's echoed user message (`codex_native/forwarder.py`) drops the
+  wrapped part, so the stored and displayed message equals what the user typed.
 - Other native harnesses: no automatic delivery in this version; the panel
   shows the fallback note and Add output to message.
+
+The web decides whether to show the fallback note without a new endpoint. It
+already receives each session's harness type, and it keeps a copy of the
+server's native-harness list with a test that keeps the two in sync, following
+`web/src/lib/forkHarness.ts`. A harness receives runs automatically unless it
+is native, with claude-native and codex-native as the exceptions.
 
 The notice wording lives in `code_run_context.py`.
 
@@ -298,8 +319,13 @@ The notice wording lives in `code_run_context.py`.
   off returns 404; verbatim check; copy-on-write refusal; concurrency limit;
   policy DENY, ASK, and approved ASK; event schemas; a run survives a dropped
   viewer stream.
-- Agent delivery: latest run per block, trimming, still-running runs, SDK,
-  claude-native, and codex-native wiring.
+- Agent delivery: latest run per block, trimming, still-running runs, the
+  window starting at the user's previous message (including a run finishing
+  mid-reply and several user messages in a row), runs missing their `started`
+  item, SDK wiring including the rebuild after a runner restart,
+  claude-native wiring, and Codex echo stripping leaving the stored message
+  unchanged.
+- Web harness list: the client copy matches the server's native-harness list.
 - Web: Run button visibility, dialog and bottom sheet, store de-duplication by
   offset, reconnect states, earlier runs, fallback note.
 - End-to-end: run a shell block, see output, stop it, reload and find it
