@@ -1544,8 +1544,18 @@ def _normalize_message_content(
         isinstance(block, dict) and block.get("type") in _MULTIMODAL_BLOCK_TYPES
         for block in content
     )
-    if has_multimodal or (keep_notices and _has_framework_notice(content)):
+    if keep_notices and _has_framework_notice(content):
         return content
+    if has_multimodal:
+        # Plain readers reject unknown blocks, so a text notice becomes text.
+        return [
+            {"type": "input_text", "text": block["text"]}
+            if isinstance(block, dict)
+            and block.get("type") == FRAMEWORK_NOTICE_BLOCK_TYPE
+            and isinstance(block.get("text"), str)
+            else block
+            for block in content
+        ]
 
     parts: list[str] = []
     for block in content:
