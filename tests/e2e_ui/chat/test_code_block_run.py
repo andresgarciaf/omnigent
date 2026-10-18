@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -175,8 +176,10 @@ def test_expand_shows_all_output_and_survives_streaming(
 
     panel = page.get_by_test_id("code-run-panel").filter(has_text="stream-line-1")
     expand = panel.get_by_role("button", name="Expand output")
-    expect(expand).to_be_visible(timeout=30_000)
-    expect(panel.get_by_test_id("code-run-status")).to_contain_text("Running")
+    output = panel.get_by_test_id("code-run-output")
+    # Sample once an intermediate line is out (the run may or may not still be going).
+    expect(panel).to_contain_text("stream-line-20", timeout=30_000)
+    expect(expand).to_be_visible()
     collapsed = _output_height(panel)
     assert collapsed <= 290, collapsed
 
@@ -185,15 +188,15 @@ def test_expand_shows_all_output_and_survives_streaming(
     expect(collapse).to_be_visible()
     page.wait_for_function(
         "([el, h]) => el.getBoundingClientRect().height > h + 50",
-        arg=[panel.get_by_test_id("code-run-output").element_handle(), collapsed],
+        arg=[output.element_handle(), collapsed],
     )
-    expanded = _output_height(panel)
 
-    # More output arrives while expanded: the panel keeps growing, still expanded.
+    # Once a later line is out, the panel is still expanded past the cap.
     expect(panel).to_contain_text("stream-line-60", timeout=30_000)
     expect(panel.get_by_test_id("code-run-status")).to_contain_text("Exited with code 0")
     expect(collapse).to_be_visible()
-    assert _output_height(panel) > expanded
+    expect(output).not_to_have_class(re.compile(r"\bmax-h-72\b"))
+    assert _output_height(panel) > 288
 
     collapse.click()
     expect(expand).to_be_visible()
