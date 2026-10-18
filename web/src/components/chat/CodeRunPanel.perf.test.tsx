@@ -1,0 +1,143 @@
+// Performance bounds for code run panels: what one output batch re-renders,
+// the cost of streaming to the output cap, block hashing, and hydration.
+import { act, cleanup, render } from "@testing-library/react";
+import { Profiler, type ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useCanEdit, useIsOwner } from "@/hooks/usePermissions";
+import { useSession } from "@/hooks/useSession";
+import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
+import { sha256Hex } from "@/lib/codeRuns";
+import { useCodeRunStore } from "@/store/codeRunStore";
+import { ConversationScopeContext } from "./conversationScope";
+import { CodeBlockRunner } from "./CodeRunPanel";
+
+vi.mock("@/hooks/useSession", () => ({ useSession: vi.fn() }));
+vi.mock("@/hooks/usePermissions", () => ({ useIsOwner: vi.fn(), useCanEdit: vi.fn() }));
+vi.mock("@/hooks/useIsMobileViewport", () => ({ useIsMobileViewport: vi.fn() }));
+vi.mock("@/lib/codeRuns", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, sha256Hex: vi.fn(actual.sha256Hex as (text: string) => string) };
+});
+
+const SESSION = "conv_perf";
+const MESSAGE = { messageId: "msg_1", streaming: false };
+const REPORT = process.env.CODE_RUN_PERF_REPORT === "1";
+const report = (label: string, value: unknown) => {
+  if (REPORT) process.stderr.write(`[code-run-perf] ${label}: ${JSON.stringify(value)}\n`);
+};
+
+function started(runId: string, code: string, startedAt = 100) {
+  return {
+    type: "code_run",
+    run_id: runId,
+    phase: "started",
+    message_id: "msg_1",
+    block_hash: sha256Hex(code),
+    language: "shell",
+    command: code,
+    started_at: startedAt,
+  };
+}
+
+function Block({ code, onRender }: { code: string; onRender: () => void }) {
+  return (
+    <Profiler id={code} onRender={onRender}>
+      <CodeBlockRunner
+        message={MESSAGE}
+        code={code}
+        language="shell"
+        console={false}
+        render={(button?: ReactNode) => <div>{button}</div>}
+      />
+    </Profiler>
+  );
+}
+
+beforeEach(() => {
+  useCodeRunStore.setState({ sessions: {} });
+  vi.mocked(useSession).mockReturnValue({
+    session: { runnerId: "runner_1", runnerOnline: true, harness: "openai-agents" },
+    isLoading: false,
+    error: null,
+  } as unknown as ReturnType<typeof useSession>);
+  vi.mocked(useIsOwner).mockReturnValue(true);
+  vi.mocked(useCanEdit).mockReturnValue(true);
+  vi.mocked(useIsMobileViewport).mockReturnValue(false);
+});
+
+afterEach(cleanup);
+
+describe("code run panel performance", () => {
+  it("re-renders only the block whose run got output", () => {
+    const renders = { a: 0, b: 0 };
+    act(() => {
+      useCodeRunStore
+        .getState()
+        .ingestItems(SESSION, [started("run_a", "$ echo a"), started("run_b", "$ echo b")]);
+    });
+    render(
+      <ConversationScopeContext.Provider value={SESSION}>
+        <Block code="$ echo a" onRender={() => renders.a++} />
+        <Block code="$ echo b" onRender={() => renders.b++} />
+      </ConversationScopeContext.Provider>,
+    );
+    const before = { ...renders };
+    for (let batch = 0; batch < 10; batch++) {
+      act(() => useCodeRunStore.getState().output(SESSION, "run_a", batch * 4, "stdout", "out\n"));
+    }
+    const delta = { a: renders.a - before.a, b: renders.b - before.b };
+    report("renders per 10 batches to block a", delta);
+    expect(delta.b).toBe(0);
+    expect(delta.a).toBeGreaterThan(0);
+  });
+
+  it("runs the elapsed-time ticker only while a run is active", () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      act(() => {
+        useCodeRunStore.getState().ingestItems(SESSION, [
+          started("run_a", "$ echo t"),
+          {
+            type: "code_run",
+            run_id: "run_a",
+            phase: "finished",
+            status: "exited",
+            exit_code: 0,
+            duration_ms: 1,
+            output: [],
+          },
+          started("run_b", "$ echo u"),
+        ]);
+      });
+      const view = render(
+        <ConversationScopeContext.Provider value={SESSION}>
+          <Block code="$ echo t" onRender={() => {}} />
+        </ConversationScopeContext.Provider>,
+      );
+      const finishedTimers = vi.getTimerCount();
+      view.rerender(
+        <ConversationScopeContext.Provider value={SESSION}>
+          <Block code="$ echo t" onRender={() => {}} />
+          <Block code="$ echo u" onRender={() => {}} />
+        </ConversationScopeContext.Provider>,
+      );
+      const withRunning = vi.getTimerCount();
+      act(() =>
+        useCodeRunStore.getState().finished(SESSION, {
+          type: "code_run",
+          run_id: "run_b",
+          phase: "finished",
+          status: "exited",
+          exit_code: 0,
+          duration_ms: 1,
+          output: [],
+        }),
+      );
+      const afterFinish = vi.getTimerCount();
+      report("timers finished/running/after finish", [finishedTimers, withRunning, afterFinish]);
+      expect([finishedTimers, withRunning, afterFinish]).toEqual([0, 1, 0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

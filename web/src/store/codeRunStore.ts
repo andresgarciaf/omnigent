@@ -205,7 +205,7 @@ export const useCodeRunStore = create<CodeRunStoreState>((set) => {
  * connected and doesn't list it, and waiting while the runner is offline.
  */
 export function codeRunState(
-  session: SessionCodeRuns,
+  session: Pick<SessionCodeRuns, "listingSettled">,
   run: CodeRun,
   runnerOnline: boolean,
 ): CodeRunState {
@@ -227,6 +227,18 @@ export function blockRuns(
     .reverse()
     .filter((run) => run.messageId === messageId && run.blockHash === blockHash)
     .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+}
+
+/**
+ * A block's run ids, newest first. Selectors return this with shallow equality,
+ * so a block re-renders only when its own list of runs changes.
+ */
+export function blockRunIds(
+  session: SessionCodeRuns | undefined,
+  messageId: string,
+  blockHash: string,
+): string[] {
+  return blockRuns(session, messageId, blockHash).map((run) => run.runId);
 }
 
 /** Key for a block's local-only state: message id plus block hash. */

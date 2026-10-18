@@ -1,5 +1,14 @@
-import { createContext, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { PlayIcon, SquareIcon } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import { DisabledActionTooltip } from "@/components/DisabledActionTooltip";
 import { useScopedConversationId } from "./conversationScope";
 import { Button } from "@/components/ui/button";
@@ -30,13 +39,12 @@ import { cn } from "@/lib/utils";
 import { OutputView } from "@/shell/NotebookPreview";
 import { useChatStore } from "@/store/chatStore";
 import {
-  blockRuns,
+  blockRunIds,
   codeBlockKey,
   codeRunState,
   useCodeRunStore,
   type CodeRun,
   type CodeRunState,
-  type SessionCodeRuns,
 } from "@/store/codeRunStore";
 
 /** The assistant message a chat code block belongs to; unset outside saved assistant text. */
@@ -128,23 +136,54 @@ function useOutputOverflows(
 }
 
 /** One run: status line, output, and the controls this viewer may use. */
-function RunView({
-  run,
-  session,
+const RunView = memo(function RunView({
+  runId,
   sessionId,
   runnerOnline,
   canStop,
   addOutput,
 }: {
-  run: CodeRun;
-  session: SessionCodeRuns;
+  runId: string;
   sessionId: string;
   runnerOnline: boolean;
   canStop: boolean;
   /** Set when the agent doesn't receive runs and the viewer may draft a message. */
   addOutput: ((run: CodeRun) => void) | null;
 }) {
-  const state = codeRunState(session, run, runnerOnline);
+  // Subscribe to this run alone, so its output re-renders nothing else.
+  const run = useCodeRunStore((store) => store.sessions[sessionId]?.runs[runId]);
+  const listingSettled = useCodeRunStore(
+    (store) => store.sessions[sessionId]?.listingSettled ?? false,
+  );
+  if (!run) return null;
+  return (
+    <RunBody
+      run={run}
+      listingSettled={listingSettled}
+      sessionId={sessionId}
+      runnerOnline={runnerOnline}
+      canStop={canStop}
+      addOutput={addOutput}
+    />
+  );
+});
+
+function RunBody({
+  run,
+  listingSettled,
+  sessionId,
+  runnerOnline,
+  canStop,
+  addOutput,
+}: {
+  run: CodeRun;
+  listingSettled: boolean;
+  sessionId: string;
+  runnerOnline: boolean;
+  canStop: boolean;
+  addOutput: ((run: CodeRun) => void) | null;
+}) {
+  const state = codeRunState({ listingSettled }, run, runnerOnline);
   const now = useNow(state === "running");
   const [expanded, setExpanded] = useState(false);
   const [outputElement, setOutputElement] = useState<HTMLDivElement | null>(null);
@@ -339,9 +378,14 @@ export function CodeBlockRunner({
   const { session } = useSession(sessionId || null);
   const isOwner = useIsOwner(sessionId);
   const canEdit = useCanEdit(sessionId);
-  const runs = useCodeRunStore((state) => state.sessions[sessionId]);
   const blockHash = useMemo(() => sha256Hex(code), [code]);
   const blockKey = codeBlockKey(message.messageId, blockHash);
+  // Per-block selectors: another block's run or output leaves this one alone.
+  const runIds = useCodeRunStore(
+    useShallow((state) => blockRunIds(state.sessions[sessionId], message.messageId, blockHash)),
+  );
+  const refusal = useCodeRunStore((state) => state.sessions[sessionId]?.refusals[blockKey] ?? null);
+  const copyOnWrite = useCodeRunStore((state) => state.sessions[sessionId]?.copyOnWrite ?? false);
   const command = useMemo(
     () => deriveCodeRunCommand(language, code, console),
     [language, code, console],
@@ -419,14 +463,10 @@ export function CodeBlockRunner({
 
   if (!sessionId) return <>{render()}</>;
   const canRun = isOwner && session?.runnerId != null && !message.streaming;
-  const copyOnWrite = runs?.copyOnWrite ?? false;
-  const refusal = runs?.refusals[blockKey] ?? null;
-  const allRuns = blockRuns(runs, message.messageId, blockHash);
-  const latest = refusal === null ? allRuns[0] : undefined;
-  const earlier = refusal === null ? allRuns.slice(1) : allRuns;
+  const latest = refusal === null ? runIds[0] : undefined;
+  const earlier = refusal === null ? runIds.slice(1) : runIds;
   const runnerOnline = session?.runnerOnline !== false;
   const runViewProps = {
-    session: runs!,
     sessionId,
     runnerOnline,
     canStop: isOwner,
@@ -461,7 +501,7 @@ export function CodeBlockRunner({
   return (
     <>
       {render(runButton)}
-      {(refusal !== null || allRuns.length > 0) && (
+      {(refusal !== null || runIds.length > 0) && (
         <div
           data-testid="code-run-panel"
           className="mt-1 mb-4 w-full min-w-0 overflow-hidden rounded-md border bg-background text-sm"
@@ -473,7 +513,7 @@ export function CodeBlockRunner({
               </span>
             </div>
           )}
-          {latest && <RunView key={latest.runId} run={latest} {...runViewProps} />}
+          {latest && <RunView key={latest} runId={latest} {...runViewProps} />}
           {earlier.length > 0 && (
             <div className="border-t">
               <Button
@@ -488,9 +528,9 @@ export function CodeBlockRunner({
                   : `Show ${earlier.length} earlier run${earlier.length === 1 ? "" : "s"}`}
               </Button>
               {showEarlier &&
-                earlier.map((run) => (
-                  <div key={run.runId} className="border-t">
-                    <RunView run={run} {...runViewProps} />
+                earlier.map((runId) => (
+                  <div key={runId} className="border-t">
+                    <RunView runId={runId} {...runViewProps} />
                   </div>
                 ))}
             </div>
