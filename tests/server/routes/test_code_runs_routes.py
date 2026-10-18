@@ -8,7 +8,9 @@ every refused caller is turned away before the runner is called.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -308,6 +310,24 @@ def _runner_starts(runner: _RunnerClient) -> list[tuple[str, str, Any]]:
 )
 def test_derive_code_run_command(language: str, code: str, console: bool, expected: str) -> None:
     assert derive_code_run_command(language, code, console=console) == expected
+
+
+# Shared with web/src/lib/codeRuns.test.ts, which checks the client's copy.
+_DERIVATION_FIXTURE = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "code_runs" / "command_derivation.json"
+)
+
+
+@pytest.mark.parametrize(
+    "case", json.loads(_DERIVATION_FIXTURE.read_text())["cases"], ids=lambda case: case["name"]
+)
+def test_derive_code_run_command_matches_shared_fixture(case: dict[str, Any]) -> None:
+    """The route's cleaning of a block gives the command the web shows for it."""
+    code = routes_code_runs._normalize_block_text(case["code"])
+    assert (
+        derive_code_run_command(case["language"], code, console=case["console"])
+        == (case["command"])
+    )
 
 
 @pytest.mark.parametrize(

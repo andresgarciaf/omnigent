@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   codeRunComposerText,
@@ -11,6 +14,7 @@ import {
   sha256Hex,
   startCodeRun,
   stopCodeRun,
+  type CodeRunLanguage,
 } from "./codeRuns";
 
 const fetchMock = vi.fn();
@@ -70,6 +74,34 @@ describe("deriveCodeRunCommand", () => {
     expect(deriveCodeRunCommand("shell", "$ ls\n% pwd\necho hi", false)).toBe("ls\npwd\necho hi");
     expect(deriveCodeRunCommand("shell", "$ ls\nfile.txt\n$ pwd", true)).toBe("ls\npwd");
     expect(deriveCodeRunCommand("python", "$ not a prompt", false)).toBe("$ not a prompt");
+  });
+});
+
+// Shared with tests/server/routes/test_code_runs_routes.py, which checks the
+// server's cleaning against the same cases.
+const DERIVATION_CASES = (
+  JSON.parse(
+    readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../../../tests/fixtures/code_runs/command_derivation.json",
+      ),
+      "utf8",
+    ),
+  ) as {
+    cases: {
+      name: string;
+      language: CodeRunLanguage;
+      console: boolean;
+      code: string;
+      command: string;
+    }[];
+  }
+).cases;
+
+describe("deriveCodeRunCommand matches the server's cleaning", () => {
+  it.each(DERIVATION_CASES.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    expect(deriveCodeRunCommand(c.language, normalizeBlockText(c.code), c.console)).toBe(c.command);
   });
 });
 

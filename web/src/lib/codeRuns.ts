@@ -111,6 +111,34 @@ export function codeRunLanguage(tag: string, code: string): CodeRunLanguage | nu
   return lines.length > 0 && lines.every((line) => line.startsWith("$ ")) ? "shell" : null;
 }
 
+// Every line boundary Python's `str.splitlines()` recognizes; `\r\n` counts once.
+const LINE_BOUNDARIES = new Set([
+  "\n",
+  "\r",
+  "\u000b",
+  "\u000c",
+  "\u001c",
+  "\u001d",
+  "\u001e",
+  "\u0085",
+  "\u2028",
+  "\u2029",
+]);
+
+/** Python's `str.splitlines()`: a boundary at the very end adds no empty line. */
+function splitLines(text: string): string[] {
+  const lines: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (!LINE_BOUNDARIES.has(text[i]!)) continue;
+    lines.push(text.slice(start, i));
+    if (text[i] === "\r" && text[i + 1] === "\n") i++;
+    start = i + 1;
+  }
+  if (start < text.length) lines.push(text.slice(start));
+  return lines;
+}
+
 /**
  * The command a run executes, as the server derives it: shell blocks lose
  * leading `$ ` / `% ` prompts, a `console` block keeps only its prompt lines,
@@ -122,8 +150,7 @@ export function deriveCodeRunCommand(
   console: boolean,
 ): string {
   if (language !== "shell") return code;
-  return code
-    .split("\n")
+  return splitLines(code)
     .flatMap((line) => {
       const prompt = line.startsWith("$ ") || line.startsWith("% ");
       if (prompt) return [line.slice(2)];
