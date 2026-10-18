@@ -67,6 +67,7 @@ from omnigent.host.frames import (
 from omnigent.host.frames import (
     workspace_missing_message as _workspace_missing_message,
 )
+from omnigent.inner.native_attachments import framework_text_notice_block
 from omnigent.llms.context_window import resolve_effective_context_window
 from omnigent.mcp_selection import mcp_selection_revision
 from omnigent.models.model_metadata import concrete_reported_model
@@ -112,6 +113,7 @@ from omnigent.runtime import (
     pending_inputs,
 )
 from omnigent.runtime.agent_cache import AgentCache
+from omnigent.runtime.code_run_context import code_run_notice
 from omnigent.runtime.policies.approval import (
     build_elicitation_request_event,
     resolve_ask_timeout,
@@ -123,7 +125,7 @@ from omnigent.runtime.policies.builder import (
     load_session_usage,
 )
 from omnigent.runtime.policies.engine import PolicyEngine
-from omnigent.runtime.workflow import _find_spec_by_name
+from omnigent.runtime.workflow import _find_spec_by_name, fetch_all_items
 from omnigent.server import session_live_state, shutdown_state
 from omnigent.server._elicitation_registry import (
     _harness_elicitation_owners,
@@ -6093,6 +6095,56 @@ def _build_native_terminal_message_event(
     return event
 
 
+# Native harnesses whose executors deliver text framework notices.
+_CODE_RUN_NOTICE_NATIVE_HARNESSES = frozenset({"claude-native", "codex-native"})
+
+
+async def _with_code_run_notice(
+    content: object,
+    conversation_store: ConversationStore,
+    session_id: str,
+    *,
+    exclude_item_id: str | None = None,
+) -> object:
+    """
+    Append the code-run notice to forwarded user content, when there is one.
+
+    Only the forwarded copy carries the notice; the stored item stays as
+    typed. Sessions without a ``code_run`` item pay one indexed lookup.
+
+    :param content: Forwarded message content, a string or block list.
+    :param conversation_store: Store holding the session's items.
+    :param session_id: Session id, e.g. ``"conv_abc123"``.
+    :param exclude_item_id: Id of the message being sent when it is
+        already persisted, so it does not count as the previous message.
+    :returns: *content* with a text framework notice block appended, or
+        *content* unchanged when there is nothing to report.
+    """
+    try:
+        probe = await asyncio.to_thread(
+            conversation_store.list_items, session_id, limit=1, type="code_run"
+        )
+        if not probe.data:
+            return content
+        items = await asyncio.to_thread(fetch_all_items, conversation_store, session_id)
+    except Exception:  # noqa: BLE001
+        # The message matters more than the notice: deliver it without one.
+        _logger.warning(
+            "Code-run notice lookup failed for session=%s",
+            session_id,
+            exc_info=True,
+            extra={"session_id": session_id},
+        )
+        return content
+    notice = code_run_notice([item.to_api_dict() for item in items if item.id != exclude_item_id])
+    if not notice:
+        return content
+    blocks = [{"type": "input_text", "text": content}] if isinstance(content, str) else content
+    if not isinstance(blocks, list):
+        return content
+    return [*blocks, framework_text_notice_block(notice)]
+
+
 async def _forward_native_terminal_message(
     runner_client: httpx.AsyncClient,
     session_id: str,
@@ -6103,6 +6155,7 @@ async def _forward_native_terminal_message(
     model_override: str | None = None,
     input_delivery: Mapping[str, object] | None = None,
     agent_revision: str | None = None,
+    conversation_store: ConversationStore | None = None,
 ) -> None:
     """
     Forward one Omnigent web-chat message to the native terminal harness.
@@ -6128,6 +6181,8 @@ async def _forward_native_terminal_message(
         ``None`` when routing did not pick a model.
     :param input_delivery: Queued input identifiers and original enqueue time.
     :param agent_revision: Effective spec revision used to invalidate runner caches.
+    :param conversation_store: Store to read code runs from for the
+        code-run notice; ``None`` sends the message without one.
     :returns: None.
     :raises HTTPException: 502 when the runner or harness rejects
         the injection request.
@@ -6182,6 +6237,10 @@ async def _forward_native_terminal_message(
                 exc_info=True,
                 extra={"session_id": session_id},
             )
+    if conversation_store is not None and harness in _CODE_RUN_NOTICE_NATIVE_HARNESSES:
+        event["content"] = await _with_code_run_notice(
+            event.get("content"), conversation_store, session_id
+        )
     try:
         resp = await runner_client.post(
             f"/v1/sessions/{session_id}/events",
@@ -6819,6 +6878,14 @@ async def _forward_event_to_runner(
                     exc_info=True,
                     extra={"session_id": session_id},
                 )
+
+    if body.type == "message" and forwarded_data.get("role") == "user":
+        forwarded_data["content"] = await _with_code_run_notice(
+            forwarded_data.get("content"),
+            conversation_store,
+            session_id,
+            exclude_item_id=persisted_items[0].id,
+        )
 
     # Flatten SessionEventInput {type, data} into the runner's
     # discriminated-union shape {type, ...data_fields}. The runner's
@@ -7943,6 +8010,7 @@ async def _dispatch_session_event_to_runner_impl(
                 ),
                 input_delivery=input_delivery,
                 agent_revision=agent_revision,
+                conversation_store=conversation_store,
             )
             forwarded = True
             if pending_id is not None:
