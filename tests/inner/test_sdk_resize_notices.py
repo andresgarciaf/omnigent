@@ -9,7 +9,12 @@ import httpx
 import pytest
 
 from omnigent.inner.claude_sdk_executor import ClaudeSDKExecutor
-from omnigent.inner.native_attachments import FRAMEWORK_NOTICE_BLOCK_TYPE
+from omnigent.inner.native_attachments import (
+    FRAMEWORK_NOTICE_BLOCK_TYPE,
+    expand_framework_notices,
+    framework_notices,
+    framework_text_notice_block,
+)
 from omnigent.inner.openai_agents_sdk_executor import OpenAIAgentsSDKExecutor
 from omnigent.runner.app_support import _resolve_forwarded_message_content
 from omnigent.runtime.harnesses._executor_adapter import ExecutorAdapter
@@ -159,3 +164,14 @@ async def test_runner_upload_notices_reach_sdk_on_fresh_and_reused_sessions(
                 assert executor._pending_framework_context == {}
     finally:
         await executor.close()
+
+
+def test_text_notice_renders_as_system_context_beside_the_user_text() -> None:
+    typed = {"type": "input_text", "text": "what failed?"}
+    message = {"role": "user", "content": [typed, framework_text_notice_block("run summary")]}
+
+    assert framework_notices(message["content"]) == ["run summary"]
+    assert expand_framework_notices([message]) == [
+        {"role": "system", "content": [{"type": "input_text", "text": "run summary"}]},
+        {"role": "user", "content": [typed]},
+    ]

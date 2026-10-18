@@ -470,6 +470,11 @@ def framework_notice_block(source_metadata: Mapping[str, object]) -> dict[str, o
     return {"type": FRAMEWORK_NOTICE_BLOCK_TYPE, "source_metadata": dict(source_metadata)}
 
 
+def framework_text_notice_block(text: str) -> dict[str, object]:
+    """Build transient model context that carries its own text."""
+    return {"type": FRAMEWORK_NOTICE_BLOCK_TYPE, "text": text}
+
+
 def framework_notices(content: object) -> list[str]:
     """Extract transient framework notices from structured content."""
     if not isinstance(content, list):
@@ -478,7 +483,9 @@ def framework_notices(content: object) -> list[str]:
     for block in content:
         if not isinstance(block, dict) or block.get("type") != FRAMEWORK_NOTICE_BLOCK_TYPE:
             continue
-        text = resize_notice(block.get("source_metadata"))
+        text = block.get("text")
+        if not isinstance(text, str):
+            text = resize_notice(block.get("source_metadata"))
         if text:
             notices.append(text)
     return notices
