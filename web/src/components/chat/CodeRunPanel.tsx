@@ -351,6 +351,21 @@ function CodeRunDialog({
   );
 }
 
+// Block text to hash, so a block remounted by its message (theme change,
+// history paging) is hashed once. ponytail: drops the oldest entry past 500
+// blocks; an LRU only matters if one view shows more blocks than that.
+const blockHashes = new Map<string, string>();
+
+function blockHashOf(code: string): string {
+  let hash = blockHashes.get(code);
+  if (hash === undefined) {
+    hash = sha256Hex(code);
+    if (blockHashes.size >= 500) blockHashes.delete(blockHashes.keys().next().value!);
+    blockHashes.set(code, hash);
+  }
+  return hash;
+}
+
 /**
  * Run controls for one runnable chat code block: the header Run button
  * (owner only) and the output panel under the block (anyone who can view).
@@ -378,7 +393,7 @@ export function CodeBlockRunner({
   const { session } = useSession(sessionId || null);
   const isOwner = useIsOwner(sessionId);
   const canEdit = useCanEdit(sessionId);
-  const blockHash = useMemo(() => sha256Hex(code), [code]);
+  const blockHash = blockHashOf(code);
   const blockKey = codeBlockKey(message.messageId, blockHash);
   // Per-block selectors: another block's run or output leaves this one alone.
   const runIds = useCodeRunStore(

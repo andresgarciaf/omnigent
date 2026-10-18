@@ -7,7 +7,17 @@ import { Reasoning, ReasoningContent } from "./reasoning";
 import { Message, MessageAction, MessageActions, MessageContent, MessageResponse } from "./message";
 import { CodeBlockRunner, CodeRunMessageContext } from "@/components/chat/CodeRunPanel";
 import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
+import { codeRunLanguage, normalizeBlockText } from "@/lib/codeRuns";
 import type { ServerInfo } from "@/lib/capabilities";
+
+vi.mock("@/lib/codeRuns", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    codeRunLanguage: vi.fn(actual.codeRunLanguage as (tag: string, code: string) => unknown),
+    normalizeBlockText: vi.fn(actual.normalizeBlockText as (text: string) => string),
+  };
+});
 
 vi.mock("@/components/chat/CodeRunPanel", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -362,6 +372,46 @@ describe("MessageResponse code-block run", () => {
     const copy = await screen.findByRole("button", { name: "Copy Code" });
     expect(copy.parentElement).toContainElement(screen.getByRole("button", { name: "Run" }));
     expect(runnerCalls().at(-1)).toEqual(expected);
+  });
+
+  it("checks a block once while its message re-renders", async () => {
+    const info = { features: { code_block_run: true } } as unknown as ServerInfo;
+    const tree = (markdown: string, streaming: boolean) => (
+      <CapabilitiesProvider info={info}>
+        <CodeRunMessageContext.Provider value={{ messageId: "msg_1", streaming }}>
+          <MessageResponse>{markdown}</MessageResponse>
+        </CodeRunMessageContext.Provider>
+      </CapabilitiesProvider>
+    );
+    const markdown = "```bash\nls\n```";
+    const { rerender } = render(tree(markdown, false));
+    await screen.findByRole("button", { name: "Copy Code" });
+    vi.mocked(codeRunLanguage).mockClear();
+    for (let index = 0; index < 20; index++) rerender(tree(markdown, index % 2 === 0));
+    expect(codeRunLanguage).toHaveBeenCalledTimes(0);
+  });
+
+  it("skips run checks while the message is still streaming", async () => {
+    const info = { features: { code_block_run: true } } as unknown as ServerInfo;
+    const { rerender } = render(
+      <CapabilitiesProvider info={info}>
+        <MessageResponse>{"```bash\nl"}</MessageResponse>
+      </CapabilitiesProvider>,
+    );
+    await screen.findByRole("button", { name: "Copy Code" });
+    vi.mocked(codeRunLanguage).mockClear();
+    vi.mocked(normalizeBlockText).mockClear();
+    let markdown = "```bash\nl";
+    for (const token of ["s", " -", "la", "\n```"]) {
+      markdown += token;
+      rerender(
+        <CapabilitiesProvider info={info}>
+          <MessageResponse>{markdown}</MessageResponse>
+        </CapabilitiesProvider>,
+      );
+    }
+    expect(codeRunLanguage).not.toHaveBeenCalled();
+    expect(normalizeBlockText).not.toHaveBeenCalled();
   });
 
   it.each([

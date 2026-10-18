@@ -125,6 +125,33 @@ describe("code run panel performance", () => {
     expect(last50).toBeLessThan(Math.max(first50 * 4, 2));
   });
 
+  it("hashes a block once however often it renders", () => {
+    vi.mocked(sha256Hex).mockClear();
+    const view = render(
+      <ConversationScopeContext.Provider value={SESSION}>
+        <Block code="$ echo once" onRender={() => {}} />
+      </ConversationScopeContext.Provider>,
+    );
+    for (let index = 0; index < 50; index++) {
+      view.rerender(
+        <ConversationScopeContext.Provider value={SESSION}>
+          <Block code="$ echo once" onRender={() => {}} />
+        </ConversationScopeContext.Provider>,
+      );
+    }
+    view.unmount();
+    for (let index = 0; index < 10; index++) {
+      render(
+        <ConversationScopeContext.Provider value={SESSION}>
+          <Block code="$ echo once" onRender={() => {}} />
+        </ConversationScopeContext.Provider>,
+      ).unmount();
+    }
+    const calls = vi.mocked(sha256Hex).mock.calls.length;
+    report("sha256 calls for 50 rerenders + 10 remounts", calls);
+    expect(calls).toBe(1);
+  });
+
   it("runs the elapsed-time ticker only while a run is active", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     try {

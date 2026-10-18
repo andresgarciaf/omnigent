@@ -610,6 +610,15 @@ function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
   // Blocks of a saved assistant message can run when the deployment allows it.
   const runMessage = useContext(CodeRunMessageContext);
   const codeRunsEnabled = isFeatureEnabled(useServerInfo(), "code_block_run");
+  const tag = codeFenceTag(children);
+  // Checked once per block text, and never while the message streams (no context yet).
+  const checkRuns = runMessage !== null && codeRunsEnabled;
+  const runnable = useMemo(() => {
+    if (!checkRuns) return null;
+    const runCode = normalizeBlockText(code);
+    const language = codeRunLanguage(tag, runCode);
+    return language ? { code: runCode, language } : null;
+  }, [checkRuns, code, tag]);
   const block = isValidElement(children)
     ? cloneElement(children, { "data-block": "true" } as Record<string, unknown>)
     : children;
@@ -634,15 +643,12 @@ function ChatCodeBlockPre({ children }: ComponentProps<"pre">) {
     </div>
   );
 
-  const tag = codeFenceTag(children);
-  const runCode = normalizeBlockText(code);
-  const runLanguage = runMessage && codeRunsEnabled ? codeRunLanguage(tag, runCode) : null;
-  if (runMessage && runLanguage) {
+  if (runMessage && runnable) {
     return (
       <CodeBlockRunner
         message={runMessage}
-        code={runCode}
-        language={runLanguage}
+        code={runnable.code}
+        language={runnable.language}
         console={tag.toLowerCase() === "console"}
         render={renderBlock}
         runButtonClassName={CODE_BLOCK_OVERLAY_BUTTON_CLASS}
