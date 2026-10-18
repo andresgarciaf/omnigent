@@ -10145,6 +10145,10 @@ describe("chatStore — handleSessionEvent (resource events)", () => {
 
   describe("session.code_run.*", () => {
     it("routes run events to the delivering stream's session", () => {
+      vi.useFakeTimers({ toFake: ["requestAnimationFrame"] });
+      onTestFinished(() => {
+        vi.useRealTimers();
+      });
       useCodeRunStore.setState({ sessions: {} });
       const item = {
         type: "code_run",
@@ -10164,6 +10168,7 @@ describe("chatStore — handleSessionEvent (resource events)", () => {
         },
         "conv_runs",
       );
+      vi.advanceTimersToNextFrame();
       handleSessionEvent(
         { type: "session_code_run_snapshot", runId: "run_1", offset: 1, output: [] },
         "conv_runs",

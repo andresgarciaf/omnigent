@@ -253,7 +253,7 @@ function RunBody({
           ))}
         </div>
       )}
-      {run.finished?.truncated && (
+      {(run.finished ? run.finished.truncated : run.liveCut) && (
         <p className="border-t px-3 py-1.5 text-muted-foreground">
           Output cut: only the start and end were kept.
         </p>

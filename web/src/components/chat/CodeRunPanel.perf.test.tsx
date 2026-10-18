@@ -91,6 +91,40 @@ describe("code run panel performance", () => {
     expect(delta.a).toBeGreaterThan(0);
   });
 
+  it("streams to the 100,000 character cap in 500 batches without quadratic work", () => {
+    act(() => useCodeRunStore.getState().ingestItems(SESSION, [started("run_a", "$ seq")]));
+    const { container } = render(
+      <ConversationScopeContext.Provider value={SESSION}>
+        <Block code="$ seq" onRender={() => {}} />
+      </ConversationScopeContext.Provider>,
+    );
+    // 200 characters a batch: five colored 40-character lines, 100,000 in all.
+    const line = "\u001b[32m" + "x".repeat(25) + "\u001b[0m line\n";
+    const batch = line.repeat(5);
+    const timings: number[] = [];
+    let offset = 0;
+    const startedAt = performance.now();
+    for (let index = 0; index < 500; index++) {
+      const t0 = performance.now();
+      act(() => useCodeRunStore.getState().output(SESSION, "run_a", offset, "stdout", batch));
+      timings.push(performance.now() - t0);
+      offset += batch.length;
+    }
+    const total = performance.now() - startedAt;
+    const first50 = timings.slice(0, 50).reduce((sum, t) => sum + t, 0) / 50;
+    const last50 = timings.slice(-50).reduce((sum, t) => sum + t, 0) / 50;
+    report("stream 500 batches", {
+      totalMs: Math.round(total),
+      first50AvgMs: +first50.toFixed(2),
+      last50AvgMs: +last50.toFixed(2),
+      chars: offset,
+    });
+    expect(offset).toBe(100_000);
+    expect(container.textContent).toContain("x".repeat(25));
+    // Linear work keeps the last batches about as cheap as the first ones.
+    expect(last50).toBeLessThan(Math.max(first50 * 4, 2));
+  });
+
   it("runs the elapsed-time ticker only while a run is active", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     try {

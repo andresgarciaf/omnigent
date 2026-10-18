@@ -305,6 +305,16 @@ describe("output panel", () => {
     expect(screen.getByRole("button", { name: "Hide earlier runs" })).toBeInTheDocument();
   });
 
+  it("notes the cut while a run streams past the saved-output cap", () => {
+    act(() => {
+      useCodeRunStore.getState().started(SESSION, startedItem("run_1", 100));
+      useCodeRunStore.getState().output(SESSION, "run_1", 0, "stdout", "z".repeat(100_001));
+    });
+    renderRunner();
+    expect(screen.getByTestId("code-run-status")).toHaveTextContent("Running");
+    expect(screen.getByText(/Output cut/)).toBeInTheDocument();
+  });
+
   describe("expand control", () => {
     // jsdom has no layout: stand in a content height and fire resize callbacks.
     let contentHeight = 0;

@@ -8,6 +8,21 @@ vi.mock("@/components/ai-elements/code-block", () => ({
   CodeBlockContent: ({ code }: { code: string }) => <pre data-testid="code-cell">{code}</pre>,
 }));
 
+// Count the characters each ANSI render parses, delegating to the real component.
+const ansiParsed = vi.hoisted(() => ({ chars: 0 }));
+vi.mock("ansi-to-react", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const module = actual.default as Record<string, unknown> | ((props: unknown) => unknown);
+  const Real = (typeof module === "function" ? module : module.default) as (props: {
+    children?: string;
+  }) => unknown;
+  const Counting = (props: { children?: string }) => {
+    ansiParsed.chars += props.children?.length ?? 0;
+    return Real(props);
+  };
+  return { default: Counting };
+});
+
 import typicalRaw from "./__fixtures__/01_typical.ipynb?raw";
 import edgecasesRaw from "./__fixtures__/02_edgecases.ipynb?raw";
 import brokenRaw from "./__fixtures__/03_broken.ipynb?raw";
@@ -218,5 +233,32 @@ describe("OutputView: reused for chat code run output", () => {
     const pre = container.querySelector("pre")!;
     expect(pre.classList.contains("whitespace-pre")).toBe(true);
     expect(pre.classList.contains("whitespace-pre-wrap")).toBe(false);
+  });
+});
+
+describe("OutputView: long streamed output", () => {
+  const RED_LINE = "x".repeat(99) + "\n";
+
+  it("keeps a color set early on for text far past the first piece", () => {
+    const text = "\u001b[31m" + RED_LINE.repeat(100) + "\u001b[0mplain\n";
+    const { container } = render(
+      <OutputView output={{ output_type: "stream", name: "stdout", text }} />,
+    );
+    const spans = [...container.querySelectorAll("span")].filter((span) => span.textContent);
+    const red = spans.filter((span) => span.getAttribute("style")?.includes("color"));
+    expect(red.map((span) => span.textContent).join("")).toBe(RED_LINE.repeat(100));
+    expect(container.textContent).toBe(RED_LINE.repeat(100) + "plain\n");
+  });
+
+  it("parses only the end again when output grows", () => {
+    const base = RED_LINE.repeat(200);
+    const { rerender } = render(
+      <OutputView output={{ output_type: "stream", name: "stdout", text: base }} />,
+    );
+    ansiParsed.chars = 0;
+    rerender(
+      <OutputView output={{ output_type: "stream", name: "stdout", text: base + RED_LINE }} />,
+    );
+    expect(ansiParsed.chars).toBeLessThan(10_000);
   });
 });

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CODE_RUN_OUTPUT_MAX_CHARS } from "@/lib/codeRuns";
 import { blockRuns, codeRunState, useCodeRunStore } from "./codeRunStore";
 
 const SESSION = "conv_a";
@@ -68,6 +69,38 @@ describe("codeRunStore", () => {
       { stream: "stderr", text: "oops" },
     ]);
     expect(run("run_1").received).toBe(15);
+  });
+
+  it("coalesces queued output into one store update per animation frame", () => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame"] });
+    try {
+      store().started(SESSION, startedItem("run_1"));
+      let updates = 0;
+      const unsubscribe = useCodeRunStore.subscribe(() => updates++);
+      for (let index = 0; index < 10; index++) {
+        store().queueOutput(SESSION, "run_1", index, "stdout", "x");
+      }
+      expect(updates).toBe(0);
+      vi.advanceTimersToNextFrame();
+      unsubscribe();
+      expect(updates).toBe(1);
+      expect(run("run_1").output).toEqual([{ stream: "stdout", text: "x".repeat(10) }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops keeping live output at the saved-output cap and notes the cut", () => {
+    store().started(SESSION, startedItem("run_1"));
+    const chunk = "y".repeat(30_000);
+    for (let index = 0; index < 4; index++) {
+      store().output(SESSION, "run_1", index * chunk.length, "stdout", chunk);
+    }
+    expect(run("run_1").output[0]!.text).toHaveLength(CODE_RUN_OUTPUT_MAX_CHARS);
+    expect(run("run_1")).toMatchObject({ received: 120_000, liveCut: true });
+    const before = run("run_1");
+    store().output(SESSION, "run_1", 0, "stdout", chunk);
+    expect(run("run_1")).toBe(before);
   });
 
   it("takes a snapshot only when it is ahead of what it holds", () => {

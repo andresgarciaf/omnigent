@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  CODE_RUN_OUTPUT_MAX_CHARS,
   readCodeRunSegments,
   type CodeRunFinishedStatus,
   type CodeRunLanguage,
@@ -27,6 +28,8 @@ export interface CodeRun {
   } | null;
   /** Seen running on the current stream connection (live event or snapshot). */
   live: boolean;
+  /** Live output passed the saved-output cap, so later batches are not kept. */
+  liveCut: boolean;
 }
 
 export interface SessionCodeRuns {
@@ -49,6 +52,14 @@ interface CodeRunStoreState {
   started: (sessionId: string, item: WireItem) => void;
   finished: (sessionId: string, item: WireItem) => void;
   output: (
+    sessionId: string,
+    runId: string,
+    offset: number,
+    stream: CodeRunStream,
+    text: string,
+  ) => void;
+  /** {@link output}, coalesced to at most one store update per animation frame. */
+  queueOutput: (
     sessionId: string,
     runId: string,
     offset: number,
@@ -86,6 +97,7 @@ function emptyRun(runId: string): CodeRun {
     received: 0,
     finished: null,
     live: false,
+    liveCut: false,
   };
 }
 
@@ -97,6 +109,38 @@ function appendText(output: CodeRunSegment[], stream: CodeRunStream, text: strin
   if (last?.stream === stream) return [...output.slice(0, -1), { stream, text: last.text + text }];
   return [...output, { stream, text }];
 }
+
+/**
+ * Append a live output batch, dropping what the run already holds by offset.
+ * Like the server's saved copy, at most {@link CODE_RUN_OUTPUT_MAX_CHARS} are kept.
+ * Returns *run* itself when nothing changes, so subscribers don't re-render.
+ */
+function applyOutput(run: CodeRun, offset: number, stream: CodeRunStream, text: string): CodeRun {
+  const end = offset + text.length;
+  if (run.finished || end <= run.received) return run.live ? run : { ...run, live: true };
+  const fresh = text.slice(Math.max(0, run.received - offset));
+  const kept = fresh.slice(0, Math.max(0, CODE_RUN_OUTPUT_MAX_CHARS - run.received));
+  return {
+    ...run,
+    output: kept ? appendText(run.output, stream, kept) : run.output,
+    received: end,
+    live: true,
+    liveCut: run.liveCut || kept.length < fresh.length,
+  };
+}
+
+interface QueuedOutput {
+  sessionId: string;
+  runId: string;
+  offset: number;
+  stream: CodeRunStream;
+  text: string;
+}
+
+const nextFrame = (callback: () => void): void => {
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(callback);
+  else setTimeout(callback, 16);
+};
 
 /** Merge a saved `code_run` item (either phase) into its run. */
 function applyItem(run: CodeRun, item: WireItem): CodeRun {
@@ -143,6 +187,27 @@ export const useCodeRunStore = create<CodeRunStoreState>((set) => {
     updateSession(sessionId, (session) => ({
       runs: { ...session.runs, [runId]: update(session.runs[runId] ?? emptyRun(runId)) },
     }));
+  const applyOutputs = (entries: readonly QueuedOutput[]) =>
+    set((state) => {
+      let sessions = state.sessions;
+      for (const { sessionId, runId, offset, stream, text } of entries) {
+        const session = sessions[sessionId] ?? EMPTY_SESSION;
+        const run = session.runs[runId] ?? emptyRun(runId);
+        const next = applyOutput(run, offset, stream, text);
+        if (next === run) continue;
+        sessions = {
+          ...sessions,
+          [sessionId]: { ...session, runs: { ...session.runs, [runId]: next } },
+        };
+      }
+      return sessions === state.sessions ? state : { sessions };
+    });
+  let queued: QueuedOutput[] = [];
+  const flushQueued = () => {
+    const entries = queued;
+    queued = [];
+    applyOutputs(entries);
+  };
   const upsertItem = (sessionId: string, item: WireItem, live: boolean) => {
     const runId = str(item.run_id);
     if (!runId) return;
@@ -160,12 +225,11 @@ export const useCodeRunStore = create<CodeRunStoreState>((set) => {
     started: (sessionId, item) => upsertItem(sessionId, item, true),
     finished: (sessionId, item) => upsertItem(sessionId, item, false),
     output: (sessionId, runId, offset, stream, text) =>
-      updateRun(sessionId, runId, (run) => {
-        const end = offset + text.length;
-        if (run.finished || end <= run.received) return { ...run, live: true };
-        const fresh = text.slice(Math.max(0, run.received - offset));
-        return { ...run, output: appendText(run.output, stream, fresh), received: end, live: true };
-      }),
+      applyOutputs([{ sessionId, runId, offset, stream, text }]),
+    queueOutput: (sessionId, runId, offset, stream, text) => {
+      if (queued.length === 0) nextFrame(flushQueued);
+      queued.push({ sessionId, runId, offset, stream, text });
+    },
     snapshot: (sessionId, runId, offset, output) =>
       updateRun(sessionId, runId, (run) =>
         run.finished || offset <= run.received

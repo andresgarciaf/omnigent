@@ -8,6 +8,9 @@ export type CodeRunLanguage = "shell" | "python" | "node";
 export type CodeRunStream = "stdout" | "stderr";
 export type CodeRunFinishedStatus = "exited" | "stopped" | "timed_out" | "failed";
 
+/** Output a run keeps, start and end. Mirrors Python `CODE_RUN_OUTPUT_MAX_CHARS`. */
+export const CODE_RUN_OUTPUT_MAX_CHARS = 100_000;
+
 export interface CodeRunSegment {
   stream: CodeRunStream;
   text: string;

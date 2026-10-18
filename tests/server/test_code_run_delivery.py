@@ -284,7 +284,7 @@ def _web_harness_set(source: str, name: str) -> set[str]:
 
 
 def test_web_harness_lists_match_the_server() -> None:
-    """The web's copy of the native and notice-receiving harness lists stays in sync."""
+    """The web's copies of the harness lists and the output cap stay in sync."""
     from omnigent.harness_aliases import NATIVE_HARNESSES
 
     ts_path = Path(__file__).resolve().parents[2] / "web" / "src" / "lib" / "codeRuns.ts"
@@ -296,3 +296,8 @@ def test_web_harness_lists_match_the_server() -> None:
     assert _web_harness_set(source, "CODE_RUN_NOTICE_NATIVE_HARNESSES") == set(
         orchestration._CODE_RUN_NOTICE_NATIVE_HARNESSES
     )
+    # The web stops keeping live output where the saved copy stops.
+    from omnigent.entities.conversation import CODE_RUN_OUTPUT_MAX_CHARS
+
+    [web_cap] = re.findall(r"CODE_RUN_OUTPUT_MAX_CHARS = ([0-9_]+);", source)
+    assert int(web_cap) == CODE_RUN_OUTPUT_MAX_CHARS

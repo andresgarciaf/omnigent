@@ -1,4 +1,4 @@
-import type { RefObject, UIEvent } from "react";
+import { memo, useRef, type RefObject, type UIEvent } from "react";
 import type { BundledLanguage } from "shiki";
 import AnsiDefault from "ansi-to-react";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -130,6 +130,45 @@ function parseNotebook(content: string): { notebook?: Notebook; error?: string }
   return { notebook: nb };
 }
 
+// Long output renders in pieces, each ending at the first newline after
+// ANSI_PIECE_CHARS characters. Appending never changes earlier pieces, so a
+// streamed batch re-parses only the last one.
+const ANSI_PIECE_CHARS = 4096;
+const ESC_BRACKET = "\u001b[";
+
+/** The SGR (color/style) codes still in effect after *text*, given those before it. */
+function sgrStateAfter(before: readonly string[], text: string): readonly string[] {
+  let state = before;
+  for (let at = text.indexOf(ESC_BRACKET); at !== -1; at = text.indexOf(ESC_BRACKET, at + 2)) {
+    let end = at + 2;
+    while (end < text.length && "0123456789;".includes(text[end]!)) end++;
+    if (text[end] !== "m") continue;
+    const code = text.slice(at, end + 1);
+    const params = text.slice(at + 2, end);
+    const resets = params === "" || params === "0" || params.startsWith("0;");
+    // Keep the newest few codes; a reset starts over.
+    state = resets ? (params.length > 1 ? [code] : []) : [...state, code].slice(-16);
+  }
+  return state;
+}
+
+function splitAnsiPieces(text: string): { start: number; text: string }[] {
+  const pieces: { start: number; text: string }[] = [];
+  let start = 0;
+  while (text.length - start > ANSI_PIECE_CHARS) {
+    const newline = text.indexOf("\n", start + ANSI_PIECE_CHARS);
+    if (newline === -1) break;
+    pieces.push({ start, text: text.slice(start, newline + 1) });
+    start = newline + 1;
+  }
+  pieces.push({ start, text: text.slice(start) });
+  return pieces;
+}
+
+const AnsiPiece = memo(function AnsiPiece({ text }: { text: string }) {
+  return <Ansi>{text}</Ansi>;
+});
+
 function AnsiText({
   text,
   className,
@@ -139,6 +178,25 @@ function AnsiText({
   className?: string;
   nowrap?: boolean;
 }) {
+  // The SGR state at the end of each settled piece, reused while the piece is unchanged.
+  const settled = useRef<{ text: string; end: readonly string[] }[]>([]);
+  const pieces = splitAnsiPieces(text);
+  let state: readonly string[] = [];
+  const rendered = pieces.map((piece, index) => {
+    // Each piece starts with the codes in effect, so colors carry across pieces.
+    const prefixed = state.join("") + piece.text;
+    if (index < pieces.length - 1) {
+      const cached = settled.current[index];
+      if (cached?.text === piece.text) {
+        state = cached.end;
+      } else {
+        state = sgrStateAfter(state, piece.text);
+        settled.current.length = index;
+        settled.current.push({ text: piece.text, end: state });
+      }
+    }
+    return <AnsiPiece key={piece.start} text={prefixed} />;
+  });
   // Outputs (tracebacks especially) contain long unbroken runs — separator
   // rules, file paths — that word-wrapping can't split. Wrap where possible
   // (overflow-wrap) but let anything unbreakable scroll horizontally within the
@@ -151,7 +209,7 @@ function AnsiText({
         className,
       )}
     >
-      <Ansi>{text}</Ansi>
+      {rendered}
     </pre>
   );
 }

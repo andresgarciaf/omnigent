@@ -8371,7 +8371,8 @@ export function handleSessionEvent(event: StreamEvent, streamConversationId?: st
     case "session_code_run_output":
       if (sourceConversationId) {
         const { runId, offset, stream, text } = event;
-        useCodeRunStore.getState().output(sourceConversationId, runId, offset, stream, text);
+        // At most one store update per frame, however fast batches arrive.
+        useCodeRunStore.getState().queueOutput(sourceConversationId, runId, offset, stream, text);
       }
       return;
     case "session_code_run_snapshot":
