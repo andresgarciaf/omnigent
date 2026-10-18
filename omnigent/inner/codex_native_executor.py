@@ -1012,7 +1012,9 @@ def _content_to_input_items(content: object, bridge_dir: Path) -> list[dict[str,
             if block_type == FRAMEWORK_NOTICE_BLOCK_TYPE:
                 notice_text = block.get("text")
                 if isinstance(notice_text, str):
-                    deferred_notices.append(codex_framework_notice_text(notice_text))
+                    wrapped = codex_framework_notice_text(notice_text, bridge_dir)
+                    if wrapped is not None:
+                        deferred_notices.append(wrapped)
                 else:
                     _apply_resize_notice_to_latest_image(items, block.get("source_metadata"))
                 continue

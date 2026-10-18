@@ -517,19 +517,44 @@ def expand_framework_notices(messages: list[dict[str, Any]]) -> list[dict[str, A
 
 
 # Codex has no hidden per-turn context, so a text notice rides as a tagged
-# input item that the forwarder drops before storing the echoed user message.
-_CODEX_NOTICE_OPEN = "<omnigent-framework-notice>"
-_CODEX_NOTICE_CLOSE = "</omnigent-framework-notice>"
+# input item. The executor records each exact text it sends, and the forwarder
+# drops only a recorded text when storing the echoed user message, so neither
+# user text nor run output can spoof or escape the wrapper.
+_CODEX_SENT_NOTICES_DIR = "codex_sent_framework_notices"
 
 
-def codex_framework_notice_text(text: str) -> str:
-    """Wrap a framework notice for a Codex input item."""
-    return f"{_CODEX_NOTICE_OPEN}\n{text}\n{_CODEX_NOTICE_CLOSE}"
+def _codex_sent_notice_path(bridge_dir: Path, text: str) -> Path:
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return bridge_dir / _CODEX_SENT_NOTICES_DIR / digest
 
 
-def is_codex_framework_notice_text(text: str) -> bool:
-    """Whether *text* is a whole notice wrapped by :func:`codex_framework_notice_text`."""
-    return text.startswith(_CODEX_NOTICE_OPEN) and text.endswith(_CODEX_NOTICE_CLOSE)
+def codex_framework_notice_text(text: str, bridge_dir: Path) -> str | None:
+    """
+    Wrap a framework notice for a Codex input item and record it as sent.
+
+    :param text: Notice text, e.g. a code-run summary.
+    :param bridge_dir: Session bridge directory shared with the forwarder.
+    :returns: The wrapped text, or ``None`` when it could not be recorded
+        (sending it unrecorded would store it in the user's message).
+    """
+    wrapped = (
+        f'<omnigent-framework-notice id="{uuid.uuid4().hex}">\n{text}\n'
+        "</omnigent-framework-notice>"
+    )
+    path = _codex_sent_notice_path(bridge_dir, wrapped)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # ponytail: records are never pruned; one small file per notice sent.
+        path.touch()
+    except OSError:
+        _logger.warning("Could not record a Codex framework notice; not sending it", exc_info=True)
+        return None
+    return wrapped
+
+
+def is_sent_codex_framework_notice(text: str, bridge_dir: Path) -> bool:
+    """Whether *text* is exactly a notice :func:`codex_framework_notice_text` sent."""
+    return _codex_sent_notice_path(bridge_dir, text).exists()
 
 
 def codex_resize_metadata_path(path: Path, source_metadata: object) -> Path:
