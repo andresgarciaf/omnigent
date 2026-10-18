@@ -98,6 +98,45 @@ const FENCE_LANGUAGES: Record<string, CodeRunLanguage> = {
   node: "node",
 };
 
+// Characters Python's `str.isspace()` accepts. JavaScript's `trim()` differs:
+// it keeps U+001C to U+001F and U+0085 but drops U+FEFF.
+const PYTHON_WHITESPACE = new Set([
+  "\t",
+  "\n",
+  "\u000b",
+  "\u000c",
+  "\r",
+  "\u001c",
+  "\u001d",
+  "\u001e",
+  "\u001f",
+  " ",
+  "\u0085",
+  "\u00a0",
+  "\u1680",
+  "\u2000",
+  "\u2001",
+  "\u2002",
+  "\u2003",
+  "\u2004",
+  "\u2005",
+  "\u2006",
+  "\u2007",
+  "\u2008",
+  "\u2009",
+  "\u200a",
+  "\u2028",
+  "\u2029",
+  "\u202f",
+  "\u205f",
+  "\u3000",
+]);
+
+/** Whether Python's `line.strip()` would leave nothing. */
+function isPythonBlank(line: string): boolean {
+  return [...line].every((char) => PYTHON_WHITESPACE.has(char));
+}
+
 /**
  * The language a fenced block runs as, or `null` when it can't run.
  *
@@ -107,7 +146,8 @@ const FENCE_LANGUAGES: Record<string, CodeRunLanguage> = {
  */
 export function codeRunLanguage(tag: string, code: string): CodeRunLanguage | null {
   if (tag) return FENCE_LANGUAGES[tag.toLowerCase()] ?? null;
-  const lines = code.split("\n").filter((line) => line.trim());
+  // As the server does: split on "\n" only, and skip lines Python's strip() empties.
+  const lines = code.split("\n").filter((line) => !isPythonBlank(line));
   return lines.length > 0 && lines.every((line) => line.startsWith("$ ")) ? "shell" : null;
 }
 

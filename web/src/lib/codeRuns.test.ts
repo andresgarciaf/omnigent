@@ -105,6 +105,26 @@ describe("deriveCodeRunCommand matches the server's cleaning", () => {
   });
 });
 
+// Shared with tests/server/routes/test_code_runs_routes.py: whether the server
+// runs an untagged block as shell.
+const ELIGIBILITY_CASES = (
+  JSON.parse(
+    readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../../../tests/fixtures/code_runs/untagged_eligibility.json",
+      ),
+      "utf8",
+    ),
+  ) as { cases: { name: string; code: string; runnable: boolean }[] }
+).cases;
+
+describe("codeRunLanguage matches the server's untagged check", () => {
+  it.each(ELIGIBILITY_CASES.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    expect(codeRunLanguage("", normalizeBlockText(c.code))).toBe(c.runnable ? "shell" : null);
+  });
+});
+
 describe("harnessReceivesCodeRuns", () => {
   it.each([
     ["openai-agents", true],

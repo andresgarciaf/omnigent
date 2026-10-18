@@ -330,6 +330,18 @@ def test_derive_code_run_command_matches_shared_fixture(case: dict[str, Any]) ->
     )
 
 
+_ELIGIBILITY_FIXTURE = _DERIVATION_FIXTURE.with_name("untagged_eligibility.json")
+
+
+@pytest.mark.parametrize(
+    "case", json.loads(_ELIGIBILITY_FIXTURE.read_text())["cases"], ids=lambda case: case["name"]
+)
+def test_untagged_block_eligibility_matches_shared_fixture(case: dict[str, Any]) -> None:
+    """An untagged block runs as shell exactly when the web offers Run for it."""
+    fence = find_code_fence(f"```\n{case['code']}\n```", case["code"], "shell")
+    assert (fence is not None) == case["runnable"]
+
+
 @pytest.mark.parametrize(
     ("code", "language", "expected"),
     [
