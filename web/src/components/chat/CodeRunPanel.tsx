@@ -101,6 +101,32 @@ function statusText(state: CodeRunState, run: CodeRun, now: number): string {
   }
 }
 
+/**
+ * Whether the capped output is taller than its box, so Expand would show more.
+ * Measured only while the cap applies: a running run keeps observing as output
+ * grows, a settled one measures once and stops.
+ */
+function useOutputOverflows(
+  element: HTMLDivElement | null,
+  expanded: boolean,
+  live: boolean,
+  content: unknown,
+): boolean {
+  const [overflows, setOverflows] = useState(false);
+  // Settled output is measured again only when it is replaced.
+  const settledContent = live ? null : content;
+  useEffect(() => {
+    if (!element || expanded) return;
+    const observer = new ResizeObserver(() => {
+      setOverflows(element.scrollHeight > element.clientHeight + 1);
+      if (!live) observer.disconnect();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [element, expanded, live, settledContent]);
+  return overflows;
+}
+
 /** One run: status line, output, and the controls this viewer may use. */
 function RunView({
   run,
@@ -121,6 +147,8 @@ function RunView({
   const state = codeRunState(session, run, runnerOnline);
   const now = useNow(state === "running");
   const [expanded, setExpanded] = useState(false);
+  const [outputElement, setOutputElement] = useState<HTMLDivElement | null>(null);
+  const overflows = useOutputOverflows(outputElement, expanded, state === "running", run.output);
   const segments = useMemo(() => {
     let at = 0;
     return run.output.map((segment) => {
@@ -145,7 +173,7 @@ function RunView({
           {statusText(state, run, now)}
         </span>
         <div className="flex items-center gap-1">
-          {segments.length > 0 && (
+          {segments.length > 0 && (expanded || overflows) && (
             <Button
               className={TOUCH_TARGET}
               onClick={() => setExpanded((value) => !value)}
@@ -173,6 +201,7 @@ function RunView({
       </div>
       {segments.length > 0 && (
         <div
+          ref={setOutputElement}
           data-testid="code-run-output"
           className={cn("overflow-auto border-t", !expanded && "max-h-72")}
         >
@@ -444,7 +473,7 @@ export function CodeBlockRunner({
               </span>
             </div>
           )}
-          {latest && <RunView run={latest} {...runViewProps} />}
+          {latest && <RunView key={latest.runId} run={latest} {...runViewProps} />}
           {earlier.length > 0 && (
             <div className="border-t">
               <Button

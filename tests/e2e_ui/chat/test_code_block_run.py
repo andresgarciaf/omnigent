@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 import pytest
 import yaml
-from playwright.sync_api import Page, Route, expect
+from playwright.sync_api import Locator, Page, Route, expect
 
 from omnigent.entities import MessageData, NewConversationItem
 from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
@@ -38,7 +38,12 @@ _REPO = Path(__file__).resolve().parents[3]
 
 _QUICK_BLOCK = "echo hello-from-run"
 _LONG_BLOCK = "echo started-long-run; sleep 60; echo never-printed"
-_REPLY = f"Try these:\n\n```bash\n{_QUICK_BLOCK}\n```\n\nand\n\n```bash\n{_LONG_BLOCK}\n```\n"
+# About 60 lines over three seconds: taller than the panel's cap, still streaming.
+_STREAM_BLOCK = "for i in $(seq 1 60); do echo stream-line-$i; sleep 0.05; done"
+_REPLY = (
+    f"Try these:\n\n```bash\n{_QUICK_BLOCK}\n```\n\nand\n\n```bash\n{_LONG_BLOCK}\n```\n"
+    f"\nthen\n\n```bash\n{_STREAM_BLOCK}\n```\n"
+)
 _RUN_NOTE = (
     "Runs in this session are saved, visible to anyone who can view it, "
     "and sent to the agent on its next turn."
@@ -118,7 +123,7 @@ def test_owner_runs_stops_and_finds_runs_saved(
     base_url, session_id, _ = run_session
     page.goto(f"{base_url}/c/{session_id}")
     run_buttons = page.get_by_test_id("code-run-button")
-    expect(run_buttons).to_have_count(2, timeout=30_000)
+    expect(run_buttons).to_have_count(3, timeout=30_000)
 
     run_buttons.nth(0).click()
     dialog = page.get_by_test_id("code-run-dialog")
@@ -129,6 +134,8 @@ def test_owner_runs_stops_and_finds_runs_saved(
     panels = page.get_by_test_id("code-run-panel")
     expect(panels.nth(0)).to_contain_text("hello-from-run", timeout=30_000)
     expect(panels.nth(0).get_by_test_id("code-run-status")).to_contain_text("Exited with code 0")
+    # One line fits under the cap, so there is nothing to expand.
+    expect(panels.nth(0).get_by_role("button", name="Expand output")).to_have_count(0)
 
     # Confirmed for this session: the second Run starts without the dialog.
     run_buttons.nth(1).click()
@@ -147,6 +154,50 @@ def test_owner_runs_stops_and_finds_runs_saved(
     expect(panels.nth(1)).not_to_contain_text("never-printed")
     expect(panels.nth(1).get_by_test_id("code-run-status")).to_contain_text("Stopped")
     assert {run["status"] for run in _finished_runs(base_url, session_id)} == {"exited", "stopped"}
+
+
+def _output_height(panel: Locator) -> float:
+    box = panel.get_by_test_id("code-run-output").bounding_box()
+    assert box is not None
+    return box["height"]
+
+
+def test_expand_shows_all_output_and_survives_streaming(
+    page: Page, run_session: tuple[str, str, str]
+) -> None:
+    """Expand grows the panel, stays expanded as output streams in, and collapse restores it."""
+    base_url, session_id, _ = run_session
+    page.goto(f"{base_url}/c/{session_id}")
+    run_buttons = page.get_by_test_id("code-run-button")
+    expect(run_buttons).to_have_count(3, timeout=30_000)
+    run_buttons.nth(2).click()
+    page.get_by_test_id("code-run-dialog").get_by_role("button", name="Run").click()
+
+    panel = page.get_by_test_id("code-run-panel").filter(has_text="stream-line-1")
+    expand = panel.get_by_role("button", name="Expand output")
+    expect(expand).to_be_visible(timeout=30_000)
+    expect(panel.get_by_test_id("code-run-status")).to_contain_text("Running")
+    collapsed = _output_height(panel)
+    assert collapsed <= 290, collapsed
+
+    expand.click()
+    collapse = panel.get_by_role("button", name="Collapse output")
+    expect(collapse).to_be_visible()
+    page.wait_for_function(
+        "([el, h]) => el.getBoundingClientRect().height > h + 50",
+        arg=[panel.get_by_test_id("code-run-output").element_handle(), collapsed],
+    )
+    expanded = _output_height(panel)
+
+    # More output arrives while expanded: the panel keeps growing, still expanded.
+    expect(panel).to_contain_text("stream-line-60", timeout=30_000)
+    expect(panel.get_by_test_id("code-run-status")).to_contain_text("Exited with code 0")
+    expect(collapse).to_be_visible()
+    assert _output_height(panel) > expanded
+
+    collapse.click()
+    expect(expand).to_be_visible()
+    assert abs(_output_height(panel) - collapsed) <= 2
 
 
 def test_viewer_sees_saved_output_without_run(

@@ -305,17 +305,128 @@ describe("output panel", () => {
     expect(screen.getByRole("button", { name: "Hide earlier runs" })).toBeInTheDocument();
   });
 
-  it("caps the output height with an expand control", () => {
-    act(() => {
-      useCodeRunStore
-        .getState()
-        .ingestItems(SESSION, [startedItem("run_1", 100), finishedItem("run_1")]);
+  describe("expand control", () => {
+    // jsdom has no layout: stand in a content height and fire resize callbacks.
+    let contentHeight = 0;
+    let observers: { callback: () => void; target: Element | null }[] = [];
+    const resize = () => act(() => observers.forEach(({ callback }) => callback()));
+
+    beforeEach(() => {
+      contentHeight = 0;
+      observers = [];
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          entry: { callback: () => void; target: Element | null };
+          constructor(callback: () => void) {
+            this.entry = { callback, target: null };
+            observers.push(this.entry);
+          }
+          observe(target: Element) {
+            this.entry.target = target;
+            queueMicrotask(() => this.entry.target && this.entry.callback());
+          }
+          disconnect() {
+            this.entry.target = null;
+            observers = observers.filter((entry) => entry !== this.entry);
+          }
+          unobserve() {}
+        },
+      );
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        return this.dataset.testid === "code-run-output" ? contentHeight : 0;
+      });
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        if (this.dataset.testid !== "code-run-output") return 0;
+        return this.classList.contains("max-h-72") ? Math.min(contentHeight, 288) : contentHeight;
+      });
     });
-    renderRunner();
-    const output = screen.getByTestId("code-run-output");
-    expect(output.className).toContain("max-h-72");
-    fireEvent.click(screen.getByRole("button", { name: "Expand output" }));
-    expect(output.className).not.toContain("max-h-72");
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    });
+
+    it("is offered only when the output is taller than the cap", async () => {
+      contentHeight = 40;
+      act(() => {
+        useCodeRunStore
+          .getState()
+          .ingestItems(SESSION, [startedItem("run_1", 100), finishedItem("run_1")]);
+      });
+      renderRunner();
+      await act(async () => {});
+      expect(screen.getByTestId("code-run-output").className).toContain("max-h-72");
+      expect(screen.queryByRole("button", { name: "Expand output" })).toBeNull();
+    });
+
+    it("lifts the cap and restores it, and stays expanded as output streams", async () => {
+      contentHeight = 600;
+      act(() => {
+        useCodeRunStore.getState().started(SESSION, startedItem("run_1", 100));
+        useCodeRunStore.getState().output(SESSION, "run_1", 0, "stdout", "line\n".repeat(40));
+      });
+      renderRunner();
+      await act(async () => {});
+      const output = screen.getByTestId("code-run-output");
+      fireEvent.click(screen.getByRole("button", { name: "Expand output" }));
+      expect(output.className).not.toContain("max-h-72");
+
+      contentHeight = 900;
+      act(() => {
+        useCodeRunStore.getState().output(SESSION, "run_1", 200, "stdout", "more\n".repeat(20));
+      });
+      resize();
+      expect(screen.getByTestId("code-run-output")).toBe(output);
+      expect(output.className).not.toContain("max-h-72");
+      // The run ends while expanded; collapsing must still offer Expand again.
+      act(() => useCodeRunStore.getState().finished(SESSION, finishedItem("run_1")));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "Collapse output" }));
+      expect(output.className).toContain("max-h-72");
+      await act(async () => {});
+      expect(screen.getByRole("button", { name: "Expand output" })).toBeInTheDocument();
+    });
+
+    it("appears once streamed output grows past the cap", async () => {
+      contentHeight = 40;
+      act(() => {
+        useCodeRunStore.getState().started(SESSION, startedItem("run_1", 100));
+        useCodeRunStore.getState().output(SESSION, "run_1", 0, "stdout", "a\n");
+      });
+      renderRunner();
+      await act(async () => {});
+      expect(screen.queryByRole("button", { name: "Expand output" })).toBeNull();
+      contentHeight = 600;
+      act(() => {
+        useCodeRunStore.getState().output(SESSION, "run_1", 2, "stdout", "b\n".repeat(300));
+      });
+      resize();
+      expect(screen.getByRole("button", { name: "Expand output" })).toBeInTheDocument();
+    });
+
+    it("starts collapsed for a new run of the same block", async () => {
+      contentHeight = 600;
+      act(() => {
+        useCodeRunStore
+          .getState()
+          .ingestItems(SESSION, [startedItem("run_1", 100), finishedItem("run_1")]);
+      });
+      renderRunner();
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "Expand output" }));
+      act(() => {
+        useCodeRunStore
+          .getState()
+          .ingestItems(SESSION, [startedItem("run_2", 200), finishedItem("run_2")]);
+      });
+      await act(async () => {});
+      expect(screen.getAllByTestId("code-run-output")[0]!.className).toContain("max-h-72");
+    });
   });
 
   it.each([
