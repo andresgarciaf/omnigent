@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -275,3 +276,23 @@ async def test_no_runner_listing_call_when_every_run_has_finished(tmp_path: Path
     assert listings == []
     [notice] = _notices(bodies[-1]["content"])
     assert "boom" in notice["text"]
+
+
+def _web_harness_set(source: str, name: str) -> set[str]:
+    block = source.split(f"{name}: ReadonlySet<string> = new Set([")[1].split("]")[0]
+    return set(re.findall(r'"([a-z0-9-]+)"', block))
+
+
+def test_web_harness_lists_match_the_server() -> None:
+    """The web's copy of the native and notice-receiving harness lists stays in sync."""
+    from omnigent.harness_aliases import NATIVE_HARNESSES
+
+    ts_path = Path(__file__).resolve().parents[2] / "web" / "src" / "lib" / "codeRuns.ts"
+    if not ts_path.exists():
+        pytest.skip("web/src/lib/codeRuns.ts not present (server-only checkout)")
+    source = ts_path.read_text()
+
+    assert _web_harness_set(source, "NATIVE_HARNESSES") == set(NATIVE_HARNESSES)
+    assert _web_harness_set(source, "CODE_RUN_NOTICE_NATIVE_HARNESSES") == set(
+        orchestration._CODE_RUN_NOTICE_NATIVE_HARNESSES
+    )
