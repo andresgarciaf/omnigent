@@ -46,6 +46,8 @@ def code_run_notice(
         when unknown, e.g. after a runner restart.
     :returns: The notice text, or ``""`` when there is nothing to report.
     """
+    # Known gap: a native message is stored only once the harness echoes it, so
+    # a second native message sent before that echo reports the same runs again.
     previous_user_index = -1
     started: dict[str, Mapping[str, object]] = {}
     finished: dict[str, tuple[int, Mapping[str, object]]] = {}
