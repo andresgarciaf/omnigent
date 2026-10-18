@@ -129,12 +129,19 @@ def test_output_cut_by_the_runner_is_noted() -> None:
     assert "cut" in notice
 
 
-def test_started_run_without_a_finished_item_is_still_running() -> None:
-    notice = code_run_notice([_user(), _started("r1", command="sleep 60")])
+def test_started_run_the_runner_reports_active_is_still_running() -> None:
+    notice = code_run_notice([_user(), _started("r1", command="sleep 60")], active_run_ids={"r1"})
 
     assert "sleep 60" in notice
     assert "still running" in notice
     assert "exit code" not in notice
+
+
+def test_started_run_the_runner_does_not_report_is_left_out() -> None:
+    items = [_user(), _started("r1", command="sleep 60")]
+
+    assert code_run_notice(items) == ""
+    assert code_run_notice(items, active_run_ids={"other"}) == ""
 
 
 def test_finished_run_without_a_started_item_is_skipped() -> None:

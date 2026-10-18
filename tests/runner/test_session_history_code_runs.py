@@ -89,3 +89,10 @@ def test_history_without_runs_is_unchanged() -> None:
     items = [_user("first"), {"type": "message", "role": "assistant", "content": "ok"}]
 
     assert _convert(items) == items
+
+
+def test_reloaded_history_leaves_out_started_only_runs() -> None:
+    started_only = _run("r1", "one")[0]
+    items = [_user("first"), started_only, _user("second")]
+
+    assert _notice_text(_convert(items)[1]) == ""

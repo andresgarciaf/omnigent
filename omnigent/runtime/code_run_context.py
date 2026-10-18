@@ -9,7 +9,7 @@ user message stays exactly as typed.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 
 from omnigent.entities.conversation import (
     CANCELLATION_MARKER_TEXT,
@@ -25,18 +25,25 @@ _HEADER = (
 )
 
 
-def code_run_notice(items: Sequence[Mapping[str, object]]) -> str:
+def code_run_notice(
+    items: Sequence[Mapping[str, object]],
+    *,
+    active_run_ids: Collection[str] = frozenset(),
+) -> str:
     """
     Build the code-run notice for the user message about to be sent.
 
     Reports the latest run of each block: finished runs whose ``finished``
     item comes after the user's previous message (all of them on the first
-    message), and runs with no ``finished`` item yet as still running. A
-    finished run whose ``started`` item is missing is skipped.
+    message), and runs with no ``finished`` item yet as still running while
+    the runner reports them active. A finished run whose ``started`` item is
+    missing, and a started run the runner does not report, are left out.
 
     :param items: Session items before the message being sent, in store
         order, as flat API dicts, e.g. ``{"type": "code_run", "run_id":
         "run_a", "phase": "started", "command": "ls", ...}``.
+    :param active_run_ids: Run ids the runner reports as running; empty
+        when unknown, e.g. after a runner restart.
     :returns: The notice text, or ``""`` when there is nothing to report.
     """
     previous_user_index = -1
@@ -59,7 +66,8 @@ def code_run_notice(items: Sequence[Mapping[str, object]]) -> str:
     sections: list[str] = []
     for run_id in latest_by_block.values():
         if run_id not in finished:
-            sections.append(_render_running(started[run_id]))
+            if run_id in active_run_ids:
+                sections.append(_render_running(started[run_id]))
             continue
         finished_index, finished_item = finished[run_id]
         if finished_index > previous_user_index:
@@ -69,7 +77,12 @@ def code_run_notice(items: Sequence[Mapping[str, object]]) -> str:
     return "\n\n".join([_HEADER, *sections])
 
 
-def with_code_run_notice(content: object, items: Sequence[Mapping[str, object]]) -> object:
+def with_code_run_notice(
+    content: object,
+    items: Sequence[Mapping[str, object]],
+    *,
+    active_run_ids: Collection[str] = frozenset(),
+) -> object:
     """
     Append the code-run notice for *items* to user message content.
 
@@ -77,10 +90,11 @@ def with_code_run_notice(content: object, items: Sequence[Mapping[str, object]])
         ``[{"type": "input_text", "text": "why?"}]``.
     :param items: Session items before this message, as for
         :func:`code_run_notice`.
+    :param active_run_ids: Run ids the runner reports as running.
     :returns: *content* plus a text framework notice block, or *content*
         unchanged when there is nothing to report.
     """
-    notice = code_run_notice(items)
+    notice = code_run_notice(items, active_run_ids=active_run_ids)
     blocks = [{"type": "input_text", "text": content}] if isinstance(content, str) else content
     if not notice or not isinstance(blocks, list):
         return content

@@ -80,8 +80,17 @@ def _store_with_finished_run(tmp_path: Path, *, wrapper: str | None = None) -> t
     return store, conv
 
 
-def _capturing_runner(bodies: list[dict[str, Any]]) -> httpx.AsyncClient:
+def _capturing_runner(
+    bodies: list[dict[str, Any]], *, active_run_ids: list[str] | None = None
+) -> httpx.AsyncClient:
+    """Runner stub; ``active_run_ids=None`` makes the active-run listing unreachable."""
+
     def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path.endswith("/code-runs"):
+            if active_run_ids is None:
+                raise httpx.ConnectError("runner unreachable", request=request)
+            runs = [{"run_id": run_id, "offset": 0, "output": []} for run_id in active_run_ids]
+            return httpx.Response(200, json={"data": runs})
         bodies.append(json.loads(request.content))
         return httpx.Response(202, json={"queued": True})
 
@@ -180,3 +189,43 @@ async def test_flag_off_skips_every_item_lookup(
         )
 
     assert [body["content"] for body in bodies] == [_TYPED, _TYPED]
+
+
+def _add_started_only_run(store: Any, conv_id: str) -> None:
+    store.append(
+        conv_id,
+        [
+            NewConversationItem(
+                type="code_run",
+                response_id="code_run",
+                data=CodeRunData(
+                    run_id="run_2",
+                    phase="started",
+                    message_id="msg_1",
+                    block_hash="h2",
+                    language="shell",
+                    command="sleep 600",
+                    timeout=600,
+                    started_at=2,
+                ),
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize(("active", "listed"), [(["run_2"], True), ([], False), (None, False)])
+async def test_started_only_run_is_listed_only_while_the_runner_reports_it(
+    tmp_path: Path, active: list[str] | None, listed: bool
+) -> None:
+    store, conv = _store_with_finished_run(tmp_path)
+    _add_started_only_run(store, conv.id)
+    bodies: list[dict[str, Any]] = []
+
+    async with _capturing_runner(bodies, active_run_ids=active) as runner_client:
+        await orchestration._forward_event_to_runner(
+            conv.id, conv, _message(), store, runner_client
+        )
+
+    [notice] = _notices(bodies[-1]["content"])
+    assert ("sleep 600" in notice["text"]) is listed
+    assert "boom" in notice["text"]
