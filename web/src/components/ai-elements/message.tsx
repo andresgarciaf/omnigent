@@ -35,7 +35,7 @@ import {
   type StreamdownProps,
 } from "streamdown";
 
-import { CodeBlockRunner, CodeRunMessageContext } from "./CodeRunPanel";
+import { CodeBlockRunner, CodeRunMessageContext } from "@/components/chat/CodeRunPanel";
 import { MarkdownErrorBoundary } from "./MarkdownErrorBoundary";
 import { mermaidOptionsForTheme } from "./MermaidError";
 import { FullscreenIcon, isMermaidPre, MermaidBlock, MERMAID_NO_FULLSCREEN } from "./MermaidBlock";

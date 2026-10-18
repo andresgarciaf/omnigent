@@ -13,12 +13,12 @@ import type { RenderItem } from "@/lib/renderItems";
 import { ConversationScrollLockContext } from "@/components/ai-elements/conversation";
 import { FileViewerContext } from "@/shell/FileViewerContext";
 import { normalizeExplicitMathDelimiters } from "@/components/ai-elements/mathMarkdown";
-import { CodeBlockRunner } from "@/components/ai-elements/CodeRunPanel";
+import { CodeBlockRunner } from "@/components/chat/CodeRunPanel";
 import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
 import type { ServerInfo } from "@/lib/capabilities";
 import { BlockRenderer } from "./BlockRenderer";
 
-vi.mock("@/components/ai-elements/CodeRunPanel", async (importOriginal) => ({
+vi.mock("@/components/chat/CodeRunPanel", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   CodeBlockRunner: vi.fn(({ render: renderBlock }: { render: () => ReactNode }) => renderBlock()),
 }));

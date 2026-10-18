@@ -5,11 +5,11 @@ import { setEmbedRoot } from "@/lib/host";
 import { MermaidPreview } from "@/shell/MermaidPreview";
 import { Reasoning, ReasoningContent } from "./reasoning";
 import { Message, MessageAction, MessageActions, MessageContent, MessageResponse } from "./message";
-import { CodeBlockRunner, CodeRunMessageContext } from "./CodeRunPanel";
+import { CodeBlockRunner, CodeRunMessageContext } from "@/components/chat/CodeRunPanel";
 import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
 import type { ServerInfo } from "@/lib/capabilities";
 
-vi.mock("./CodeRunPanel", async (importOriginal) => ({
+vi.mock("@/components/chat/CodeRunPanel", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   CodeBlockRunner: vi.fn(({ render: renderBlock }: { render: (button?: ReactNode) => ReactNode }) =>
     renderBlock(<button type="button">Run</button>),

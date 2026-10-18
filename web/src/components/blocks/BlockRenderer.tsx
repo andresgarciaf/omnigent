@@ -26,7 +26,7 @@ import type { RenderItem } from "@/lib/renderItems";
 import type { SessionStatus } from "@/lib/types";
 import type { ActiveResponse } from "@/store/types";
 import { cn } from "@/lib/utils";
-import { CodeRunMessageContext, type CodeRunMessage } from "@/components/ai-elements/CodeRunPanel";
+import { CodeRunMessageContext, type CodeRunMessage } from "@/components/chat/CodeRunPanel";
 import { FilePathAwareMessageResponse } from "./ChatMarkdown";
 import { ElicitationCard } from "./ApprovalCard";
 import { ReasoningView } from "./ReasoningView";

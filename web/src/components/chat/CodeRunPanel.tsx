@@ -1,7 +1,7 @@
 import { createContext, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { PlayIcon, SquareIcon } from "lucide-react";
 import { DisabledActionTooltip } from "@/components/DisabledActionTooltip";
-import { useScopedConversationId } from "@/components/chat/conversationScope";
+import { useScopedConversationId } from "./conversationScope";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -59,6 +59,10 @@ const RUN_NOTE =
 
 // Touch-sized (44px) targets on phones.
 const TOUCH_TARGET = "max-md:min-h-11 max-md:min-w-11";
+// The header's Run icon stays 24px like Copy beside it; on phones its tap area
+// grows to 44px toward the free space on its left, away from its siblings.
+const HEADER_TOUCH_TARGET =
+  "max-md:after:absolute max-md:after:-inset-y-[11px] max-md:after:-left-[21px] max-md:after:-right-px max-md:after:content-['']";
 
 function formatDuration(ms: number): string {
   if (ms < 60_000) return `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
@@ -393,7 +397,7 @@ export function CodeBlockRunner({
     >
       <Button
         aria-label="Run"
-        className={cn(runButtonClassName, "max-md:size-11")}
+        className={cn(runButtonClassName, HEADER_TOUCH_TARGET)}
         data-testid="code-run-button"
         disabled={copyOnWrite || starting}
         onClick={onRun}
