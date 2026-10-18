@@ -67,7 +67,6 @@ from omnigent.host.frames import (
 from omnigent.host.frames import (
     workspace_missing_message as _workspace_missing_message,
 )
-from omnigent.inner.native_attachments import framework_text_notice_block
 from omnigent.llms.context_window import resolve_effective_context_window
 from omnigent.mcp_selection import mcp_selection_revision
 from omnigent.models.model_metadata import concrete_reported_model
@@ -113,7 +112,7 @@ from omnigent.runtime import (
     pending_inputs,
 )
 from omnigent.runtime.agent_cache import AgentCache
-from omnigent.runtime.code_run_context import code_run_notice
+from omnigent.runtime.code_run_context import with_code_run_notice
 from omnigent.runtime.policies.approval import (
     build_elicitation_request_event,
     resolve_ask_timeout,
@@ -6136,13 +6135,9 @@ async def _with_code_run_notice(
             extra={"session_id": session_id},
         )
         return content
-    notice = code_run_notice([item.to_api_dict() for item in items if item.id != exclude_item_id])
-    if not notice:
-        return content
-    blocks = [{"type": "input_text", "text": content}] if isinstance(content, str) else content
-    if not isinstance(blocks, list):
-        return content
-    return [*blocks, framework_text_notice_block(notice)]
+    return with_code_run_notice(
+        content, [item.to_api_dict() for item in items if item.id != exclude_item_id]
+    )
 
 
 async def _forward_native_terminal_message(

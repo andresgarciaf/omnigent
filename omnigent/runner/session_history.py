@@ -17,6 +17,7 @@ from omnigent.runner.app_support import (
     _SpecEntry,
 )
 from omnigent.runner.native import _unwrap_resolved_spec
+from omnigent.runtime.code_run_context import with_code_run_notice
 from omnigent.util.json_types import JsonObject as _JsonObject
 
 _logger = logging.getLogger("omnigent.runner.app")
@@ -200,28 +201,32 @@ def build_session_history(
                         ],
                     }
                 )
-            remaining = items[compaction_idx + 1 :]
+            first_index = compaction_idx + 1
         else:
-            remaining = items
+            first_index = 0
 
+        # The server attached each user message's code-run notice only to the
+        # forwarded copy, so rebuild it from the saved runs.
+        has_code_runs = any(item.get("type") == "code_run" for item in items)
         _skipped_types: list[str] = []
-        for item in remaining:
+        for index in range(first_index, len(items)):
+            item = items[index]
             item_type = item.get("type")
             if item_type not in (
                 "message",
                 "function_call",
                 "function_call_output",
                 "error",
+                "code_run",
             ):
                 _skipped_types.append(str(item_type))
             if item_type == "message":
-                result.append(
-                    {
-                        "type": "message",
-                        "role": item.get("role", "user"),
-                        "content": item.get("content", []),
-                    }
-                )
+                role = item.get("role", "user")
+                content = item.get("content", [])
+                if has_code_runs and role == "user" and not item.get("is_meta"):
+                    # ponytail: rescans the prefix per user message; fine for reload-only use.
+                    content = with_code_run_notice(content, items[:index])
+                result.append({"type": "message", "role": role, "content": content})
             elif item_type == "function_call":
                 result.append(
                     {

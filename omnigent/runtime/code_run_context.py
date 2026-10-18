@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
+from omnigent.inner.native_attachments import framework_text_notice_block
+
 OUTPUT_LIMIT_CHARS = 10_000
 
 _HEADER = (
@@ -61,6 +63,24 @@ def code_run_notice(items: Sequence[Mapping[str, object]]) -> str:
     if not sections:
         return ""
     return "\n\n".join([_HEADER, *sections])
+
+
+def with_code_run_notice(content: object, items: Sequence[Mapping[str, object]]) -> object:
+    """
+    Append the code-run notice for *items* to user message content.
+
+    :param content: User message content, a string or a block list, e.g.
+        ``[{"type": "input_text", "text": "why?"}]``.
+    :param items: Session items before this message, as for
+        :func:`code_run_notice`.
+    :returns: *content* plus a text framework notice block, or *content*
+        unchanged when there is nothing to report.
+    """
+    notice = code_run_notice(items)
+    blocks = [{"type": "input_text", "text": content}] if isinstance(content, str) else content
+    if not notice or not isinstance(blocks, list):
+        return content
+    return [*blocks, framework_text_notice_block(notice)]
 
 
 def _is_user_message(item: Mapping[str, object]) -> bool:
