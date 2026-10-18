@@ -34,7 +34,7 @@ const NOTEBOOK_MARKDOWN_COMPONENTS: Components = {
 // representation with a note, so hostile notebooks can't run scripts here.
 // ---------------------------------------------------------------------------
 
-interface NotebookOutput {
+export interface NotebookOutput {
   output_type: string;
   name?: string; // stream: stdout | stderr
   text?: string | string[];
@@ -130,7 +130,15 @@ function parseNotebook(content: string): { notebook?: Notebook; error?: string }
   return { notebook: nb };
 }
 
-function AnsiText({ text, className }: { text: string; className?: string }) {
+function AnsiText({
+  text,
+  className,
+  nowrap = false,
+}: {
+  text: string;
+  className?: string;
+  nowrap?: boolean;
+}) {
   // Outputs (tracebacks especially) contain long unbroken runs — separator
   // rules, file paths — that word-wrapping can't split. Wrap where possible
   // (overflow-wrap) but let anything unbreakable scroll horizontally within the
@@ -138,7 +146,8 @@ function AnsiText({ text, className }: { text: string; className?: string }) {
   return (
     <pre
       className={cn(
-        "overflow-x-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-sm p-2",
+        "overflow-x-auto font-mono text-sm p-2",
+        nowrap ? "whitespace-pre" : "whitespace-pre-wrap [overflow-wrap:anywhere]",
         className,
       )}
     >
@@ -147,12 +156,18 @@ function AnsiText({ text, className }: { text: string; className?: string }) {
   );
 }
 
-function OutputView({ output }: { output: NotebookOutput }) {
+/**
+ * One notebook output. Also renders chat code run output as `stream` outputs.
+ *
+ * @param nowrap - Scroll long lines horizontally instead of wrapping them.
+ */
+export function OutputView({ output, nowrap }: { output: NotebookOutput; nowrap?: boolean }) {
   if (output.output_type === "stream") {
     return (
       <AnsiText
         text={joinSource(output.text)}
         className={output.name === "stderr" ? "bg-destructive/10" : undefined}
+        nowrap={nowrap}
       />
     );
   }

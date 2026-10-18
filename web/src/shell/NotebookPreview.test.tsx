@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NotebookPreview } from "./NotebookPreview";
+import { NotebookPreview, OutputView } from "./NotebookPreview";
 
 // Stub Shiki (same rationale as CodeViewer.test.tsx) — render code verbatim so
 // assertions can target cell source without async highlighting.
@@ -196,5 +196,27 @@ describe("NotebookPreview — invalid input", () => {
     // Parse recovered (no error state) and the output text is rendered.
     expect(screen.queryByText(/Cannot render notebook/)).toBeNull();
     expect(screen.getByText(/line one/)).toBeInTheDocument();
+  });
+});
+
+describe("OutputView — reused for chat code run output", () => {
+  it("keeps ANSI colors and styles stderr apart", () => {
+    const { container } = render(
+      <OutputView
+        output={{ output_type: "stream", name: "stderr", text: "\u001b[31mred\u001b[0m" }}
+      />,
+    );
+    const pre = container.querySelector("pre")!;
+    expect(pre.className).toContain("bg-destructive/10");
+    expect(pre.querySelector("span[style*='color']")?.textContent).toBe("red");
+  });
+
+  it("scrolls long lines instead of wrapping when asked", () => {
+    const { container } = render(
+      <OutputView nowrap output={{ output_type: "stream", name: "stdout", text: "x" }} />,
+    );
+    const pre = container.querySelector("pre")!;
+    expect(pre.classList.contains("whitespace-pre")).toBe(true);
+    expect(pre.classList.contains("whitespace-pre-wrap")).toBe(false);
   });
 });
