@@ -896,6 +896,23 @@ ITEM_TYPE_TO_DATA_CLS: dict[str, type[BaseModel]] = {
     "code_run": CodeRunData,
 }
 
+# User-role message the runner stores when the user cancels a turn.
+CANCELLATION_MARKER_TEXT = (
+    "[System: interrupted]\n"
+    "The user interrupted and abandoned their previous request (the user "
+    "message immediately before this one). Do not resume or act on that "
+    "interrupted request unless the user asks for it again; treat the next "
+    "user message as the current instruction. The preceding assistant "
+    "message may be incomplete."
+)
+
+# Error codes stored right after a user message a native harness never received.
+NATIVE_PROMPT_NOT_RECORDED = "native_prompt_not_recorded"
+KIRO_NATIVE_PROMPT_NOT_RECORDED = "kiro_native_prompt_not_recorded"
+UNDELIVERED_PROMPT_ERROR_CODES: frozenset[str] = frozenset(
+    {NATIVE_PROMPT_NOT_RECORDED, KIRO_NATIVE_PROMPT_NOT_RECORDED}
+)
+
 # Item types that are metadata / lifecycle events — not content
 # the agent loop should include in the LLM's message context.
 # Used by _sync_history and _load_initial_history to filter.

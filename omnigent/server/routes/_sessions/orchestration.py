@@ -44,6 +44,8 @@ from omnigent.entities import (
     TerminalCommandData,
 )
 from omnigent.entities.conversation import (
+    KIRO_NATIVE_PROMPT_NOT_RECORDED,
+    NATIVE_PROMPT_NOT_RECORDED,
     FunctionCallData,
     FunctionCallOutputData,
     parse_item_data,
@@ -3458,7 +3460,7 @@ def _build_skipped_native_items(
         return []
     if _is_kiro_native_session(conv):
         harness_key = "kiro"
-        code = "kiro_native_prompt_not_recorded"
+        code = KIRO_NATIVE_PROMPT_NOT_RECORDED
         message = (
             "Kiro did not accept this web message into its structured session "
             "transcript. The native terminal may have shown the underlying error."
@@ -3467,7 +3469,7 @@ def _build_skipped_native_items(
         native_agent = _native_coding_agent_for_session(conv)
         display_name = native_agent.display_name if native_agent is not None else "The agent"
         harness_key = "native"
-        code = "native_prompt_not_recorded"
+        code = NATIVE_PROMPT_NOT_RECORDED
         message = (
             f"{display_name} never recorded this message in its transcript before "
             "accepting a later one, so it was not delivered. The native terminal may "

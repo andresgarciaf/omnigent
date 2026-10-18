@@ -11,6 +11,10 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
+from omnigent.entities.conversation import (
+    CANCELLATION_MARKER_TEXT,
+    UNDELIVERED_PROMPT_ERROR_CODES,
+)
 from omnigent.inner.native_attachments import framework_text_notice_block
 
 OUTPUT_LIMIT_CHARS = 10_000
@@ -39,7 +43,7 @@ def code_run_notice(items: Sequence[Mapping[str, object]]) -> str:
     started: dict[str, Mapping[str, object]] = {}
     finished: dict[str, tuple[int, Mapping[str, object]]] = {}
     for index, item in enumerate(items):
-        if _is_user_message(item):
+        if _is_user_message(items, index):
             previous_user_index = index
         elif item.get("type") == "code_run":
             run_id = str(item.get("run_id"))
@@ -83,8 +87,31 @@ def with_code_run_notice(content: object, items: Sequence[Mapping[str, object]])
     return [*blocks, framework_text_notice_block(notice)]
 
 
-def _is_user_message(item: Mapping[str, object]) -> bool:
-    return item.get("type") == "message" and item.get("role") == "user" and not item.get("is_meta")
+def _is_user_message(items: Sequence[Mapping[str, object]], index: int) -> bool:
+    """Whether ``items[index]`` is a message the user sent and the agent received."""
+    item = items[index]
+    if item.get("type") != "message" or item.get("role") != "user" or item.get("is_meta"):
+        return False
+    if _message_text(item.get("content")) == CANCELLATION_MARKER_TEXT:
+        return False
+    following = items[index + 1] if index + 1 < len(items) else None
+    return not (
+        following is not None
+        and following.get("type") == "error"
+        and following.get("code") in UNDELIVERED_PROMPT_ERROR_CODES
+    )
+
+
+def _message_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        text
+        for block in content
+        if isinstance(block, Mapping) and isinstance(text := block.get("text"), str)
+    )
 
 
 def _render_running(started: Mapping[str, object]) -> str:

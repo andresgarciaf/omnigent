@@ -152,3 +152,27 @@ def test_command_with_backtick_fences_stays_inside_one_fence() -> None:
     notice = code_run_notice([_started("r1", command=command), _finished("r1")])
 
     assert f"````\n{command}\n````" in notice
+
+
+def test_cancellation_marker_does_not_close_the_window() -> None:
+    from omnigent.entities.conversation import CANCELLATION_MARKER_TEXT
+
+    items = [
+        _user("first"),
+        _started("r1"),
+        _finished("r1", output="during the cancelled reply\n"),
+        _user(CANCELLATION_MARKER_TEXT),
+    ]
+
+    assert "during the cancelled reply" in code_run_notice(items)
+
+
+def test_undelivered_user_message_does_not_close_the_window() -> None:
+    items = [
+        _started("r1"),
+        _finished("r1", output="before the lost message\n"),
+        _user("never delivered"),
+        {"type": "error", "code": "native_prompt_not_recorded", "message": "lost"},
+    ]
+
+    assert "before the lost message" in code_run_notice(items)
