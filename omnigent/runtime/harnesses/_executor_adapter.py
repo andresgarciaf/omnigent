@@ -241,7 +241,7 @@ class ExecutorAdapter(HarnessApp):
         """
         executor = self._ensure_executor()
         messages = _translate_input_to_messages(
-            request.input, keep_notices=executor.reads_framework_notices
+            request.input, keep_notices=getattr(executor, "reads_framework_notices", False)
         )
         # Stamp session_key on every message so the inner executor keys its client consistently,
         # matching the key used by enqueue_session_message (steering delivery depends on this).
@@ -710,7 +710,7 @@ class ExecutorAdapter(HarnessApp):
                 # None signals a sentinel or protocol change; bail to avoid spinning.
                 return
             text = _extract_user_text(
-                injection.input, keep_notices=executor.reads_framework_notices
+                injection.input, keep_notices=getattr(executor, "reads_framework_notices", False)
             )
             if not text:
                 _logger.warning(
