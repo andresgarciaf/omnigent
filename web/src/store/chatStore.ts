@@ -1143,6 +1143,8 @@ export interface AppChatState {
    * The composer drains this on change and clears it.
    */
   pendingComposerAttachments: ComposerAttachment[];
+  /** Text queued for the active composer from outside it, e.g. a code run's output. */
+  pendingComposerText: string[];
   /**
    * True when this tab could not take an origin-wide stream slot for a
    * conversation it needed to open: every slot is held by other tabs and this
@@ -1335,6 +1337,10 @@ export interface ChatActions {
   addComposerAttachment: (attachment: ComposerAttachment) => void;
   /** Drain the queued composer attachments (called by the composer). */
   clearPendingComposerAttachments: () => void;
+  /** Queue text to append to the active composer from outside it. */
+  addComposerText: (text: string) => void;
+  /** Drain the queued composer text (called by the composer). */
+  clearPendingComposerText: () => void;
   /** Stamp {@link ChatState.runnerLaunchedAt} now — call right after a
    *  successful `launchRunner` for the open session. */
   markRunnerLaunched: () => void;
@@ -2026,6 +2032,7 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
   oldestItemId: null,
   flashItemId: null,
   pendingComposerAttachments: [],
+  pendingComposerText: [],
   streamBudgetExceeded: false,
   streamBudgetBannerDismissed: false,
   failedSendDraft: null,
@@ -3122,6 +3129,7 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
       // drained yet, so it can't bleed into the incoming composer (which drains
       // the store on mount).
       pendingComposerAttachments: [],
+      pendingComposerText: [],
     });
     conversationRegistry.setActive(conversationId);
 
@@ -3302,6 +3310,11 @@ export const useChatStore = create<ChatState>((_rootSet, get) => ({
   },
 
   clearPendingComposerAttachments: () => setActive({ pendingComposerAttachments: [] }),
+
+  addComposerText: (text) =>
+    setActive((s) => ({ pendingComposerText: [...s.pendingComposerText, text] })),
+
+  clearPendingComposerText: () => setActive({ pendingComposerText: [] }),
 
   dismissStreamBudgetBanner: () => rootSetState({ streamBudgetBannerDismissed: true }),
 

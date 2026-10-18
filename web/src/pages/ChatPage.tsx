@@ -2304,6 +2304,9 @@ function ComposerImpl(
   // "Attach to agent" button). Drained into ``mentionedItems`` below, then
   // cleared from the store so they aren't re-applied.
   const pendingComposerAttachments = useChatStore((s) => s.pendingComposerAttachments);
+  // Text pushed in from outside the composer (a code run's "Add output to
+  // message"), appended to the draft below and then cleared from the store.
+  const pendingComposerText = useChatStore((s) => s.pendingComposerText);
   // Text + attachments handed back by a send that failed before the server
   // took ownership. Drained below so the message can be retried.
   const failedSendDraft = useChatStore((s) => s.failedSendDraft);
@@ -2838,6 +2841,16 @@ function ComposerImpl(
     return () => useChatStore.getState().clearPendingComposerAttachments();
     // setMentionedItems is a stable useState setter (from useMentionBrowser).
   }, [pendingComposerAttachments, setMentionedItems]);
+
+  useEffect(() => {
+    if (pendingComposerText.length === 0) return;
+    const text = pendingComposerText.join("\n\n");
+    editText(null, (current) => (current.trim() ? `${current.trimEnd()}\n\n${text}` : text));
+    textareaRef.current = tailTextareaRef.current;
+    dirtyRef.current = true;
+    useChatStore.getState().clearPendingComposerText();
+    textareaRef.current?.focus();
+  }, [pendingComposerText, editText]);
 
   // Restore the text (and attachments) of a send that failed, so the user can
   // fix and resend instead of retyping. The composer is empty in the normal

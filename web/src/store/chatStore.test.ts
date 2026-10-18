@@ -10128,6 +10128,21 @@ describe("chatStore — handleSessionEvent (resource events)", () => {
     });
   });
 
+  describe("composer text queue", () => {
+    it("queues text for the composer until a session switch drops it", async () => {
+      useChatStore.getState().addComposerText("one");
+      useChatStore.getState().addComposerText("two");
+      expect(useChatStore.getState().pendingComposerText).toEqual(["one", "two"]);
+      useChatStore.getState().clearPendingComposerText();
+      expect(useChatStore.getState().pendingComposerText).toEqual([]);
+      useChatStore.getState().addComposerText("stale");
+      seedSessionSnapshot("conv_other", []);
+      seedSessionItems("conv_other", []);
+      await useChatStore.getState().switchTo("conv_other");
+      expect(useChatStore.getState().pendingComposerText).toEqual([]);
+    });
+  });
+
   describe("session.code_run.*", () => {
     it("routes run events to the delivering stream's session", () => {
       useCodeRunStore.setState({ sessions: {} });
