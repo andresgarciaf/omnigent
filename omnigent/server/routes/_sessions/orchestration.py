@@ -114,7 +114,7 @@ from omnigent.runtime import (
     pending_inputs,
 )
 from omnigent.runtime.agent_cache import AgentCache
-from omnigent.runtime.code_run_context import with_code_run_notice
+from omnigent.runtime.code_run_context import has_unfinished_runs, with_code_run_notice
 from omnigent.runtime.policies.approval import (
     build_elicitation_request_event,
     resolve_ask_timeout,
@@ -6172,11 +6172,14 @@ async def _with_code_run_notice(
             extra={"session_id": session_id},
         )
         return content
-    return with_code_run_notice(
-        content,
-        [item.to_api_dict() for item in items if item.id != exclude_item_id],
-        active_run_ids=await _active_code_run_ids(runner_client, session_id),
+    api_items = [item.to_api_dict() for item in items if item.id != exclude_item_id]
+    # Only a started run without a finished item needs the runner's view.
+    active_run_ids = (
+        await _active_code_run_ids(runner_client, session_id)
+        if has_unfinished_runs(api_items)
+        else frozenset()
     )
+    return with_code_run_notice(content, api_items, active_run_ids=active_run_ids)
 
 
 async def _forward_native_terminal_message(

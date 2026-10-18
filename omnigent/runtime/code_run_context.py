@@ -79,6 +79,15 @@ def code_run_notice(
     return "\n\n".join([_HEADER, *sections])
 
 
+def has_unfinished_runs(items: Sequence[Mapping[str, object]]) -> bool:
+    """Whether some ``code_run`` in *items* has a ``started`` item but no ``finished`` one."""
+    phases: dict[object, set[object]] = {}
+    for item in items:
+        if item.get("type") == "code_run":
+            phases.setdefault(item.get("run_id"), set()).add(item.get("phase"))
+    return any(run_phases == {"started"} for run_phases in phases.values())
+
+
 def with_code_run_notice(
     content: object,
     items: Sequence[Mapping[str, object]],

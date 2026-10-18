@@ -251,3 +251,27 @@ async def test_item_lookup_failure_still_delivers_the_message_without_a_notice(
         )
 
     assert bodies[-1]["content"] == _TYPED
+
+
+async def test_no_runner_listing_call_when_every_run_has_finished(tmp_path: Path) -> None:
+    store, conv = _store_with_finished_run(tmp_path)
+    listings: list[str] = []
+    bodies: list[dict[str, Any]] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            listings.append(request.url.path)
+            return httpx.Response(200, json={"data": []})
+        bodies.append(json.loads(request.content))
+        return httpx.Response(202, json={"queued": True})
+
+    async with httpx.AsyncClient(
+        base_url="http://runner.test", transport=httpx.MockTransport(_handler)
+    ) as runner_client:
+        await orchestration._forward_event_to_runner(
+            conv.id, conv, _message(), store, runner_client
+        )
+
+    assert listings == []
+    [notice] = _notices(bodies[-1]["content"])
+    assert "boom" in notice["text"]
