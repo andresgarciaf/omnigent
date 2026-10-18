@@ -216,11 +216,21 @@ export const useCodeRunStore = create<CodeRunStoreState>((set) => {
 
   return {
     sessions: {},
+    // One pass and one store update for a whole page of history.
     ingestItems: (sessionId, items) => {
-      for (const item of items) {
-        const wire = item as WireItem;
-        if (wire?.type === "code_run") upsertItem(sessionId, wire, false);
-      }
+      const codeRuns = items.filter(
+        (item): item is WireItem =>
+          (item as WireItem)?.type === "code_run" && str((item as WireItem).run_id) !== null,
+      );
+      if (codeRuns.length === 0) return;
+      updateSession(sessionId, (session) => {
+        const runs = { ...session.runs };
+        for (const item of codeRuns) {
+          const runId = item.run_id as string;
+          runs[runId] = applyItem(runs[runId] ?? emptyRun(runId), item);
+        }
+        return { runs };
+      });
     },
     started: (sessionId, item) => upsertItem(sessionId, item, true),
     finished: (sessionId, item) => upsertItem(sessionId, item, false),

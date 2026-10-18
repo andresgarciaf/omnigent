@@ -152,6 +152,30 @@ describe("code run panel performance", () => {
     expect(calls).toBe(1);
   });
 
+  it("hydrates a page of saved runs in one store update", () => {
+    const items = Array.from({ length: 500 }, (_, index) => [
+      started(`run_${index}`, `$ echo ${index}`, index),
+      {
+        type: "code_run",
+        run_id: `run_${index}`,
+        phase: "finished",
+        status: "exited",
+        exit_code: 0,
+        duration_ms: 1,
+        output: [{ stream: "stdout", text: "ok\n" }],
+      },
+    ]).flat();
+    let updates = 0;
+    const unsubscribe = useCodeRunStore.subscribe(() => updates++);
+    const t0 = performance.now();
+    useCodeRunStore.getState().ingestItems(SESSION, items);
+    const elapsed = performance.now() - t0;
+    unsubscribe();
+    report("hydrate 1000 items", { updates, ms: +elapsed.toFixed(1) });
+    expect(Object.keys(useCodeRunStore.getState().sessions[SESSION]!.runs)).toHaveLength(500);
+    expect(updates).toBe(1);
+  });
+
   it("runs the elapsed-time ticker only while a run is active", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     try {
