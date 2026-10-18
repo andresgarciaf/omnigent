@@ -229,3 +229,25 @@ async def test_started_only_run_is_listed_only_while_the_runner_reports_it(
     [notice] = _notices(bodies[-1]["content"])
     assert ("sleep 600" in notice["text"]) is listed
     assert "boom" in notice["text"]
+
+
+async def test_item_lookup_failure_still_delivers_the_message_without_a_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, conv = _store_with_finished_run(tmp_path)
+    real_list_items = store.list_items
+
+    def _list_items(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("type") == "code_run":
+            raise RuntimeError("database unavailable")
+        return real_list_items(*args, **kwargs)
+
+    monkeypatch.setattr(store, "list_items", _list_items)
+    bodies: list[dict[str, Any]] = []
+
+    async with _capturing_runner(bodies, active_run_ids=[]) as runner_client:
+        await orchestration._forward_event_to_runner(
+            conv.id, conv, _message(), store, runner_client
+        )
+
+    assert bodies[-1]["content"] == _TYPED
