@@ -1,9 +1,10 @@
 import { create } from "zustand";
-import type {
-  CodeRunFinishedStatus,
-  CodeRunLanguage,
-  CodeRunSegment,
-  CodeRunStream,
+import {
+  readCodeRunSegments,
+  type CodeRunFinishedStatus,
+  type CodeRunLanguage,
+  type CodeRunSegment,
+  type CodeRunStream,
 } from "@/lib/codeRuns";
 
 /** One run of a chat code block, merged from its saved items and live events. */
@@ -91,16 +92,6 @@ function emptyRun(runId: string): CodeRun {
 const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
 const num = (value: unknown): number | null => (typeof value === "number" ? value : null);
 
-function readSegments(value: unknown): CodeRunSegment[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((segment: { stream?: unknown; text?: unknown }) =>
-    (segment?.stream === "stdout" || segment?.stream === "stderr") &&
-    typeof segment.text === "string"
-      ? [{ stream: segment.stream, text: segment.text }]
-      : [],
-  );
-}
-
 function appendText(output: CodeRunSegment[], stream: CodeRunStream, text: string) {
   const last = output.at(-1);
   if (last?.stream === stream) return [...output.slice(0, -1), { stream, text: last.text + text }];
@@ -119,7 +110,7 @@ function applyItem(run: CodeRun, item: WireItem): CodeRun {
       startedAt: num(item.started_at) ?? run.startedAt,
     };
   }
-  const output = readSegments(item.output);
+  const output = readCodeRunSegments(item.output);
   return {
     ...run,
     output,

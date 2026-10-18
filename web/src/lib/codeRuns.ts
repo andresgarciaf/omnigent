@@ -13,6 +13,17 @@ export interface CodeRunSegment {
   text: string;
 }
 
+/** Output segments from the wire, dropping malformed entries. */
+export function readCodeRunSegments(value: unknown): CodeRunSegment[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((segment: { stream?: unknown; text?: unknown }) =>
+    (segment?.stream === "stdout" || segment?.stream === "stderr") &&
+    typeof segment.text === "string"
+      ? [{ stream: segment.stream, text: segment.text }]
+      : [],
+  );
+}
+
 // SHA-256 round constants (FIPS 180-4).
 const K = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
