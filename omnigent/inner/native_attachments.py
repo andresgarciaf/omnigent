@@ -516,6 +516,22 @@ def expand_framework_notices(messages: list[dict[str, Any]]) -> list[dict[str, A
     return result
 
 
+# Codex has no hidden per-turn context, so a text notice rides as a tagged
+# input item that the forwarder drops before storing the echoed user message.
+_CODEX_NOTICE_OPEN = "<omnigent-framework-notice>"
+_CODEX_NOTICE_CLOSE = "</omnigent-framework-notice>"
+
+
+def codex_framework_notice_text(text: str) -> str:
+    """Wrap a framework notice for a Codex input item."""
+    return f"{_CODEX_NOTICE_OPEN}\n{text}\n{_CODEX_NOTICE_CLOSE}"
+
+
+def is_codex_framework_notice_text(text: str) -> bool:
+    """Whether *text* is a whole notice wrapped by :func:`codex_framework_notice_text`."""
+    return text.startswith(_CODEX_NOTICE_OPEN) and text.endswith(_CODEX_NOTICE_CLOSE)
+
+
 def codex_resize_metadata_path(path: Path, source_metadata: object) -> Path:
     """Encode resize metadata in a persistent attachment-cache alias."""
     dimensions = resize_dimensions(source_metadata)

@@ -63,6 +63,7 @@ from omnigent.harnesses.codex_native.elicitation import (
 from omnigent.harnesses.codex_native.elicitation import (
     is_codex_request_id as _is_codex_request_id,
 )
+from omnigent.inner.native_attachments import is_codex_framework_notice_text
 from omnigent.native._native_forwarder_health import (
     note_post_success as note_native_post_success,
 )
@@ -8560,7 +8561,8 @@ def _user_message_text(item: _JsonObject) -> str:
         if not isinstance(block, dict):
             continue
         text = block.get("text")
-        if isinstance(text, str) and text:
+        # The framework notice the executor sent is not part of what the user typed.
+        if isinstance(text, str) and text and not is_codex_framework_notice_text(text):
             parts.append(text)
     return "\n\n".join(parts)
 

@@ -90,3 +90,23 @@ async def test_post_user_message_truly_empty_is_skipped() -> None:
     await fwd._post_user_message(client, "conv_x", {"turnId": "t1"}, item)
 
     assert client.posts == []
+
+
+@pytest.mark.asyncio
+async def test_post_user_message_drops_the_echoed_framework_notice() -> None:
+    """The stored user message equals what was typed, without the notice."""
+    from omnigent.inner.native_attachments import codex_framework_notice_text
+
+    client = _RecordingClient()
+    item = {
+        "type": "userMessage",
+        "content": [
+            {"type": "text", "text": "why?"},
+            {"type": "text", "text": codex_framework_notice_text("run summary")},
+        ],
+    }
+
+    await fwd._post_user_message(client, "conv_x", {"turnId": "t1"}, item)
+
+    _url, body = client.posts[0]
+    assert body["data"]["item_data"]["content"] == [{"type": "input_text", "text": "why?"}]
