@@ -10,29 +10,29 @@ Every task starts with a failing test.
 
 ## Spec points and where they land
 
-| Spec point | Task |
-| --- | --- |
-| Run button next to Copy, runnable tags and untagged `$ ` blocks | 1, 5, 6 |
-| Shown only when flag on, owner, session has a runner, message finished | 4, 5, 6 |
-| Disabled with tooltip in copy-on-write sessions | 2, 5 |
-| First-run confirmation, exact command and language, saved/visible/sent note | 1, 5 |
-| Confirmed state per session, per device, in browser storage | 1 |
-| Policy ASK reopens the dialog with the reason, resends `approved: true` | 5 |
-| Bottom sheet on narrow screens | 5 |
-| Live output, stderr apart, ANSI kept, notebook output renderer | 4, 5 |
-| Status line: running+elapsed, exited code+duration, stopped, timed out, failed, refused+reason, interrupted, waiting for the runner | 2, 5 |
-| Output cut note, Stop while running | 5 |
-| Run again replaces the panel, "Show N earlier runs" | 2, 5 |
-| Never a timeline card; refusals only on the trying device | 2, 3 |
-| Narrow screens: full width, horizontal scroll, max height + expand, touch targets | 5 |
-| Viewers and collaborators see the panel without Run/Stop | 5, 7 |
-| Fallback note + Add output to message (fenced block into composer) | 1, 5, 6 |
-| Harness list client copy kept in sync by a test, no new endpoint | 1 |
-| Block identity: message id + SHA-256 of raw block text | 1, 6 |
-| De-dup live output by offset | 2 |
-| Hydrate from saved items after reload, from `code_run.snapshot` on reconnect | 2, 3 |
-| Started-without-finished: running / interrupted / waiting for the runner | 2, 3, 5 |
-| Testing: web bullets and e2e bullets | all, 7 |
+| Spec point                                                                                                                          | Task    |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| Run button next to Copy, runnable tags and untagged `$ ` blocks                                                                     | 1, 5, 6 |
+| Shown only when flag on, owner, session has a runner, message finished                                                              | 4, 5, 6 |
+| Disabled with tooltip in copy-on-write sessions                                                                                     | 2, 5    |
+| First-run confirmation, exact command and language, saved/visible/sent note                                                         | 1, 5    |
+| Confirmed state per session, per device, in browser storage                                                                         | 1       |
+| Policy ASK reopens the dialog with the reason, resends `approved: true`                                                             | 5       |
+| Bottom sheet on narrow screens                                                                                                      | 5       |
+| Live output, stderr apart, ANSI kept, notebook output renderer                                                                      | 4, 5    |
+| Status line: running+elapsed, exited code+duration, stopped, timed out, failed, refused+reason, interrupted, waiting for the runner | 2, 5    |
+| Output cut note, Stop while running                                                                                                 | 5       |
+| Run again replaces the panel, "Show N earlier runs"                                                                                 | 2, 5    |
+| Never a timeline card; refusals only on the trying device                                                                           | 2, 3    |
+| Narrow screens: full width, horizontal scroll, max height + expand, touch targets                                                   | 5       |
+| Viewers and collaborators see the panel without Run/Stop                                                                            | 5, 7    |
+| Fallback note + Add output to message (fenced block into composer)                                                                  | 1, 5, 6 |
+| Harness list client copy kept in sync by a test, no new endpoint                                                                    | 1       |
+| Block identity: message id + SHA-256 of raw block text                                                                              | 1, 6    |
+| De-dup live output by offset                                                                                                        | 2       |
+| Hydrate from saved items after reload, from `code_run.snapshot` on reconnect                                                        | 2, 3    |
+| Started-without-finished: running / interrupted / waiting for the runner                                                            | 2, 3, 5 |
+| Testing: web bullets and e2e bullets                                                                                                | all, 7  |
 
 ## Task 1: pure helpers, `web/src/lib/codeRuns.ts`
 
@@ -48,6 +48,8 @@ Every task starts with a failing test.
   `omnigent.harness_aliases.NATIVE_HARNESSES` and the server's
   `_CODE_RUN_NOTICE_NATIVE_HARNESSES`, the way
   `test_client_server_filesystem_extension_parity` does.
+- `deriveCodeRunCommand(language, code, console)`: the server's prompt
+  stripping, so the dialog shows the exact command.
 - `isCodeRunConfirmed(sessionId)` / `confirmCodeRuns(sessionId)` in
   `localStorage`.
 - `codeRunComposerText(run)`: command, exit status, and trimmed output as a
@@ -57,7 +59,8 @@ Every task starts with a failing test.
 
 Tests: `codeRuns.test.ts` (hash vectors vs Node `crypto`, language matrix,
 harness rule, storage, composer text, API refusal parsing) and
-`tests/test_code_run_harness_parity.py`.
+`test_web_harness_lists_match_the_server` in
+`tests/server/test_code_run_delivery.py`.
 
 ## Task 2: run store, `web/src/store/codeRunStore.ts`
 
@@ -97,7 +100,9 @@ Tests: `sse.test.ts` parse cases; a `chatStore` routing case.
 
 Tests: `NotebookPreview.test.tsx` (nowrap), `usePermissions` owner case.
 
-## Task 5: `web/src/components/ai-elements/CodeRunPanel.tsx`
+## Task 5: `web/src/components/chat/CodeRunPanel.tsx`
+
+Kept out of `components/ai-elements`, which the linter skips as vendored code.
 
 - `CodeRunButton` (header, next to Copy) and `CodeRunPanel` (under the block).
 - Confirmation dialog; `needs_approval` reopens it with the reason; bottom
@@ -124,6 +129,20 @@ seeded assistant message with a shell block:
 - run, see output, stop a long run, reload and find both saved;
 - a viewer (permission level 1 on the session snapshot) sees output, no Run;
 - a phone-sized viewport run.
+
+## Decisions made while building
+
+- Copy-on-write is known only to the runner, so the button learns it from the
+  server's `409 copy_on_write` refusal and is then disabled with the tooltip
+  for the rest of the page's life. Knowing it up front needs a server field.
+- Cancelling the first-run confirmation starts nothing and shows nothing.
+  Cancelling a policy ASK shows "Refused: <reason> (not approved)" on this
+  device only.
+- Add output to message is offered to viewers who can edit (they own a
+  composer); Run and Stop stay owner-only.
+- The viewer e2e rewrites the session snapshot's permission level to 1, since
+  the local test server is single-user; the server's owner gate is covered by
+  PR 2's route tests.
 
 ## Task 8: verification
 
