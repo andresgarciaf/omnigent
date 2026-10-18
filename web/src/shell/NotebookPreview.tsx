@@ -136,18 +136,115 @@ function parseNotebook(content: string): { notebook?: Notebook; error?: string }
 const ANSI_PIECE_CHARS = 4096;
 const ESC_BRACKET = "\u001b[";
 
-/** The SGR (color/style) codes still in effect after *text*, given those before it. */
-function sgrStateAfter(before: readonly string[], text: string): readonly string[] {
+/**
+ * The SGR (color/style) state ansi-to-react's parser (anser) holds: the codes
+ * that set the foreground and background, and the decoration codes in the
+ * order pushed. Duplicates are kept, since a partial reset removes only one.
+ */
+interface SgrState {
+  fg: readonly string[] | null;
+  bg: readonly string[] | null;
+  decorations: readonly string[];
+}
+
+const EMPTY_SGR: SgrState = { fg: null, bg: null, decorations: [] };
+const DECORATION_CODES = new Set([1, 2, 3, 4, 5, 7, 8, 9]);
+const DECORATION_RESETS: Record<number, readonly string[]> = {
+  21: ["1"],
+  22: ["1", "2"],
+  23: ["3"],
+  24: ["4"],
+  25: ["5"],
+  27: ["7"],
+  28: ["8"],
+  29: ["9"],
+};
+
+/** Apply one SGR parameter list, following anser's `processChunk` rule for rule. */
+function applySgr(state: SgrState, params: string): SgrState {
+  let { fg, bg } = state;
+  let decorations = [...state.decorations];
+  const nums = params.split(";");
+  while (nums.length > 0) {
+    const num = parseInt(nums.shift()!);
+    if (isNaN(num) || num === 0) {
+      fg = null;
+      bg = null;
+      decorations = [];
+    } else if (DECORATION_CODES.has(num)) {
+      decorations.push(String(num));
+    } else if (DECORATION_RESETS[num]) {
+      for (const code of DECORATION_RESETS[num]) {
+        const index = decorations.indexOf(code);
+        if (index >= 0) decorations.splice(index, 1);
+      }
+    } else if (num === 39) {
+      fg = null;
+    } else if (num === 49) {
+      bg = null;
+    } else if ((num >= 30 && num < 38) || (num >= 90 && num < 98)) {
+      fg = [String(num)];
+    } else if ((num >= 40 && num < 48) || (num >= 100 && num < 108)) {
+      bg = [String(num)];
+    } else if ((num === 38 || num === 48) && nums.length >= 1) {
+      const mode = nums.shift();
+      let color: string[] | null = null;
+      if (mode === "5" && nums.length >= 1) {
+        const index = parseInt(nums.shift()!);
+        if (index >= 0 && index <= 255) color = [String(num), "5", String(index)];
+      } else if (mode === "2" && nums.length >= 3) {
+        const rgb = nums.splice(0, 3).map((value) => parseInt(value));
+        if (rgb.every((value) => value >= 0 && value <= 255))
+          color = [String(num), "2", ...rgb.map(String)];
+      }
+      if (color && num === 38) fg = color;
+      else if (color) bg = color;
+    }
+  }
+  return { fg, bg, decorations };
+}
+
+/** One SGR sequence that recreates *state* from a fresh parser. */
+function sgrPrefix(state: SgrState): string {
+  const codes = [...(state.fg ?? []), ...(state.bg ?? []), ...state.decorations];
+  return codes.length > 0 ? `${ESC_BRACKET}${codes.join(";")}m` : "";
+}
+
+// ansi-to-react rewrites carriage returns and backspaces before parsing codes;
+// both stay within a line. Copies of its `escapeCarriageReturn` and `fixBackspace`.
+function escapeCarriageReturn(text: string): string {
+  if (!text.includes("\r")) return text;
+  let out = text.replace(/\r+\n/gm, "\n");
+  while (/\r./.test(out)) {
+    out = out.replace(
+      /^([^\r\n]*)\r+([^\r\n]+)/gm,
+      (_, base: string, insert: string) => insert + base.slice(insert.length),
+    );
+  }
+  return out;
+}
+
+function fixBackspace(text: string): string {
+  if (!text.includes("\b")) return text;
+  let out = text;
+  let previous: string;
+  do {
+    previous = out;
+    // Anything but a newline, followed by a backspace (a control character on purpose).
+    // oxlint-disable-next-line no-control-regex
+    out = previous.replace(/[^\n]\u0008/gm, "");
+  } while (out.length < previous.length);
+  return out;
+}
+
+/** The SGR state after *text*, starting from *before*. Linear in the text. */
+function sgrStateAfter(before: SgrState, rawText: string): SgrState {
+  const text = escapeCarriageReturn(fixBackspace(rawText));
   let state = before;
   for (let at = text.indexOf(ESC_BRACKET); at !== -1; at = text.indexOf(ESC_BRACKET, at + 2)) {
     let end = at + 2;
     while (end < text.length && "0123456789;".includes(text[end]!)) end++;
-    if (text[end] !== "m") continue;
-    const code = text.slice(at, end + 1);
-    const params = text.slice(at + 2, end);
-    const resets = params === "" || params === "0" || params.startsWith("0;");
-    // Keep the newest few codes; a reset starts over.
-    state = resets ? (params.length > 1 ? [code] : []) : [...state, code].slice(-16);
+    if (text[end] === "m") state = applySgr(state, text.slice(at + 2, end));
   }
   return state;
 }
@@ -179,12 +276,12 @@ function AnsiText({
   nowrap?: boolean;
 }) {
   // The SGR state at the end of each settled piece, reused while the piece is unchanged.
-  const settled = useRef<{ text: string; end: readonly string[] }[]>([]);
+  const settled = useRef<{ text: string; end: SgrState }[]>([]);
   const pieces = splitAnsiPieces(text);
-  let state: readonly string[] = [];
+  let state = EMPTY_SGR;
   const rendered = pieces.map((piece, index) => {
-    // Each piece starts with the codes in effect, so colors carry across pieces.
-    const prefixed = state.join("") + piece.text;
+    // Each piece starts with one code recreating the state in effect.
+    const prefixed = sgrPrefix(state) + piece.text;
     if (index < pieces.length - 1) {
       const cached = settled.current[index];
       if (cached?.text === piece.text) {

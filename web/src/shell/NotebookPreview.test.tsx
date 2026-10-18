@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import AnsiDefault from "ansi-to-react";
 import { NotebookPreview, OutputView } from "./NotebookPreview";
 
 // Stub Shiki (same rationale as CodeViewer.test.tsx) — render code verbatim so
@@ -260,5 +261,72 @@ describe("OutputView: long streamed output", () => {
       <OutputView output={{ output_type: "stream", name: "stdout", text: base + RED_LINE }} />,
     );
     expect(ansiParsed.chars).toBeLessThan(10_000);
+  });
+});
+
+describe("OutputView: pieced ANSI renders like one pass", () => {
+  // Same interop as NotebookPreview.tsx for the CJS default export.
+  const Ansi = ("default" in AnsiDefault ? AnsiDefault.default : AnsiDefault) as typeof AnsiDefault;
+  const ESC = "\u001b[";
+  const FILLER = ("f".repeat(99) + "\n").repeat(45);
+
+  /** Each character's style, merged into runs, ignoring how spans are split. */
+  function styledRuns(root: Element): [string, string][] {
+    const runs: [string, string][] = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const style = node.parentElement?.closest("span")?.getAttribute("style") ?? "";
+      const last = runs.at(-1);
+      if (last && last[0] === style) last[1] += node.textContent;
+      else runs.push([style, node.textContent ?? ""]);
+    }
+    return runs;
+  }
+
+  function expectSameAsOnePass(text: string) {
+    const single = render(<Ansi>{text}</Ansi>).container;
+    const pieced = render(
+      <OutputView output={{ output_type: "stream", name: "stdout", text }} />,
+    ).container;
+    expect(pieced.querySelectorAll("code").length).toBeGreaterThan(1);
+    expect(styledRuns(pieced)).toEqual(styledRuns(single));
+  }
+
+  it("carries more than 16 active style and color codes across a piece", () => {
+    const codes = ["1", "3", "4", "9"].map((code) => `${ESC}${code}m`).join("");
+    const recolors = Array.from({ length: 20 }, (_, index) => `${ESC}${31 + (index % 7)}m`);
+    expectSameAsOnePass(codes + recolors.join("") + FILLER + "after the boundary\n");
+  });
+
+  it("starts over after a reset and carries the new color", () => {
+    expectSameAsOnePass(
+      `${ESC}1;31mbold red\n` + FILLER + `${ESC}0m${ESC}34mblue\n` + FILLER + "still blue\n",
+    );
+  });
+
+  it("carries 256-color and truecolor codes, ignoring invalid ones", () => {
+    expectSameAsOnePass(
+      `${ESC}38;5;196m${ESC}48;2;10;20;30m${ESC}38;5;300m${ESC}48;2;1;2;999m` +
+        FILLER +
+        "palette fg, truecolor bg\n",
+    );
+  });
+
+  it("follows partial resets and repeated codes like the one-pass parser", () => {
+    expectSameAsOnePass(
+      `${ESC}1m${ESC}1m${ESC}2m${ESC}22m${ESC}7;4m${ESC}24m${ESC}39;49m${ESC}93;104m` +
+        FILLER +
+        "one bold left, reversed, bright colors\n",
+    );
+  });
+
+  it("applies backspaces before reading the codes a line leaves on", () => {
+    expectSameAsOnePass(
+      `${ESC}31mx\b${ESC}32m\b\b${ESC}33my\b\b\bz\n` + FILLER + "after the boundary\n",
+    );
+  });
+
+  it("applies carriage returns before reading the codes a line leaves on", () => {
+    expectSameAsOnePass(`${ESC}31mred\r${ESC}32mgreen\n` + FILLER + "green\n");
   });
 });
