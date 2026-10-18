@@ -111,6 +111,27 @@ export function codeRunLanguage(tag: string, code: string): CodeRunLanguage | nu
   return lines.length > 0 && lines.every((line) => line.startsWith("$ ")) ? "shell" : null;
 }
 
+/**
+ * The command a run executes, as the server derives it: shell blocks lose
+ * leading `$ ` / `% ` prompts, a `console` block keeps only its prompt lines,
+ * and Python or Node source is unchanged.
+ */
+export function deriveCodeRunCommand(
+  language: CodeRunLanguage,
+  code: string,
+  console: boolean,
+): string {
+  if (language !== "shell") return code;
+  return code
+    .split("\n")
+    .flatMap((line) => {
+      const prompt = line.startsWith("$ ") || line.startsWith("% ");
+      if (prompt) return [line.slice(2)];
+      return console ? [] : [line];
+    })
+    .join("\n");
+}
+
 /** Mirrors Python `NATIVE_HARNESSES` (`omnigent/harness_aliases.py`). */
 export const NATIVE_HARNESSES: ReadonlySet<string> = new Set([
   "agy-native",

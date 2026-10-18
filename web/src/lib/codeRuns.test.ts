@@ -4,6 +4,7 @@ import {
   codeRunComposerText,
   codeRunLanguage,
   confirmCodeRuns,
+  deriveCodeRunCommand,
   harnessReceivesCodeRuns,
   isCodeRunConfirmed,
   normalizeBlockText,
@@ -61,6 +62,14 @@ describe("codeRunLanguage", () => {
     ["", "", null],
   ])("tag %j with %j runs as %j", (tag, code, expected) => {
     expect(codeRunLanguage(tag, code)).toBe(expected);
+  });
+});
+
+describe("deriveCodeRunCommand", () => {
+  it("strips shell prompts, keeps only prompt lines for console, passes source through", () => {
+    expect(deriveCodeRunCommand("shell", "$ ls\n% pwd\necho hi", false)).toBe("ls\npwd\necho hi");
+    expect(deriveCodeRunCommand("shell", "$ ls\nfile.txt\n$ pwd", true)).toBe("ls\npwd");
+    expect(deriveCodeRunCommand("python", "$ not a prompt", false)).toBe("$ not a prompt");
   });
 });
 
