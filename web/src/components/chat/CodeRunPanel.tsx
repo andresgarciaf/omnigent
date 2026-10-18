@@ -212,6 +212,7 @@ function RunView({
 
 function CodeRunDialog({
   open,
+  code,
   command,
   language,
   reason,
@@ -219,6 +220,9 @@ function CodeRunDialog({
   onConfirm,
 }: {
   open: boolean;
+  /** The block text the request sends, shown verbatim. */
+  code: string;
+  /** What the server runs for a shell block once prompts and output lines go. */
   command: string;
   language: CodeRunLanguage;
   /** A policy's reason for asking; unset for the first-run confirmation. */
@@ -248,10 +252,24 @@ function CodeRunDialog({
         )}
         <div className="min-w-0 space-y-1">
           <span className="text-xs text-muted-foreground">{LANGUAGE_LABELS[language]}</span>
-          <pre className="max-h-60 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-sm whitespace-pre">
-            {command}
+          <pre
+            data-testid="code-run-dialog-code"
+            className="max-h-60 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-sm whitespace-pre"
+          >
+            {code}
           </pre>
         </div>
+        {language === "shell" && (
+          <div className="min-w-0 space-y-1">
+            <span className="text-xs text-muted-foreground">Runs these commands</span>
+            <pre
+              data-testid="code-run-dialog-commands"
+              className="max-h-40 overflow-auto rounded-md border p-2 font-mono text-sm whitespace-pre"
+            >
+              {command}
+            </pre>
+          </div>
+        )}
         <DialogFooter>
           <Button className={TOUCH_TARGET} onClick={onCancel} type="button" variant="outline">
             Cancel
@@ -453,6 +471,7 @@ export function CodeBlockRunner({
       {dialog !== null && (
         <CodeRunDialog
           open
+          code={code}
           command={command}
           language={language}
           reason={dialog.reason}

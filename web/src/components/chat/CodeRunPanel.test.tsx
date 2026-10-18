@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCanEdit, useIsOwner } from "@/hooks/usePermissions";
 import { useSession } from "@/hooks/useSession";
 import { useIsMobileViewport } from "@/hooks/useIsMobileViewport";
-import { confirmCodeRuns, sha256Hex, startCodeRun, stopCodeRun } from "@/lib/codeRuns";
+import {
+  confirmCodeRuns,
+  sha256Hex,
+  startCodeRun,
+  stopCodeRun,
+  type CodeRunLanguage,
+} from "@/lib/codeRuns";
 import { useChatStore } from "@/store/chatStore";
 import { useCodeRunStore } from "@/store/codeRunStore";
 import { ConversationScopeContext } from "@/components/chat/conversationScope";
@@ -32,14 +38,18 @@ function setSession(overrides: Record<string, unknown> = {}) {
   } as unknown as ReturnType<typeof useSession>);
 }
 
-function renderRunner(message: CodeRunMessage = FINISHED, code = CODE) {
+function renderRunner(
+  message: CodeRunMessage = FINISHED,
+  code = CODE,
+  { language = "shell", console = false }: { language?: CodeRunLanguage; console?: boolean } = {},
+) {
   return render(
     <ConversationScopeContext.Provider value={SESSION}>
       <CodeBlockRunner
         message={message}
         code={code}
-        language="shell"
-        console={false}
+        language={language}
+        console={console}
         render={(button?: ReactNode) => <div data-testid="block">{button}</div>}
       />
     </ConversationScopeContext.Provider>,
@@ -132,7 +142,8 @@ describe("confirmation", () => {
     renderRunner();
     fireEvent.click(runButton());
     const dialog = await screen.findByTestId("code-run-dialog");
-    expect(within(dialog).getByText("echo hi")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("code-run-dialog-code").textContent).toBe(CODE);
+    expect(within(dialog).getByTestId("code-run-dialog-commands").textContent).toBe("echo hi");
     expect(within(dialog).getByText("Shell")).toBeInTheDocument();
     expect(
       within(dialog).getByText(
@@ -154,6 +165,42 @@ describe("confirmation", () => {
     fireEvent.click(runButton());
     await waitFor(() => expect(startCodeRun).toHaveBeenCalledTimes(2));
     expect(screen.queryByTestId("code-run-dialog")).toBeNull();
+  });
+
+  it("shows a console block's exact payload, sends it unchanged, and lists the commands", async () => {
+    const consoleBlock = "$ ls\nfile.txt\n% pwd\n/tmp";
+    const actual = await vi.importActual<Record<string, unknown>>("@/lib/codeRuns");
+    const realStartCodeRun = actual.startCodeRun as typeof startCodeRun;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: async () => ({ run_id: "run_new" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(startCodeRun).mockImplementation(realStartCodeRun);
+    try {
+      renderRunner(FINISHED, consoleBlock, { console: true });
+      fireEvent.click(runButton());
+      const dialog = await screen.findByTestId("code-run-dialog");
+      const shown = within(dialog).getByTestId("code-run-dialog-code").textContent;
+      expect(shown).toBe(consoleBlock);
+      expect(within(dialog).getByText("Runs these commands")).toBeInTheDocument();
+      expect(within(dialog).getByTestId("code-run-dialog-commands").textContent).toBe("ls\npwd");
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Run" }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body).code).toBe(shown);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows no command list for Python, whose source runs as sent", async () => {
+    renderRunner(FINISHED, "print(1)", { language: "python" });
+    fireEvent.click(runButton());
+    const dialog = await screen.findByTestId("code-run-dialog");
+    expect(within(dialog).getByTestId("code-run-dialog-code").textContent).toBe("print(1)");
+    expect(within(dialog).queryByTestId("code-run-dialog-commands")).toBeNull();
   });
 
   it("starts nothing when cancelled", async () => {
