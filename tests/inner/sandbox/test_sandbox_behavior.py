@@ -39,7 +39,7 @@ from pathlib import Path
 import pytest
 
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
-from omnigent.inner.os_env import create_os_environment
+from omnigent.inner.os_env import CallerProcessOSEnvironment, create_os_environment
 from omnigent.inner.sandbox import create_exec_launcher, resolve_sandbox
 from tests.inner.sandbox.conftest import run_async
 
@@ -850,6 +850,7 @@ def test_sandbox_shell_stream_stop_ends_every_descendant(
             sandbox=active_sandbox_spec_factory(),
         )
     )
+    assert isinstance(os_env, CallerProcessOSEnvironment)
     stop_requested: list[float] = []
 
     def on_output(stream: str, text: str) -> None:
