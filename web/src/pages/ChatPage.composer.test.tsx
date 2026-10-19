@@ -3671,6 +3671,7 @@ describe("Composer reply quotes", () => {
       restoredSendDraft: null,
       pendingRetryStableId: null,
       queuedMessages: [],
+      pendingComposerText: [],
     });
   });
 
@@ -4048,6 +4049,28 @@ describe("Composer reply quotes", () => {
     fireEvent.keyDown(textarea(), { key: "Enter" });
     expect(vi.mocked(props.onSend).mock.calls[0]?.[0]).toBe(text);
     if (structured) expect(vi.mocked(props.onSend).mock.calls[0]?.[2]).toEqual(replyDraft);
+  });
+
+  it("keeps a code run's output added in the same update as a given-back send", () => {
+    render(<Composer {...composerProps()} />);
+    act(() =>
+      useChatStore.setState({
+        failedSendDraft: { conversationId: "conv_test", text: "resend me", files: [] },
+        pendingComposerText: ["```text\nhi\n```"],
+      }),
+    );
+    expect(textarea()).toHaveValue("resend me\n\n```text\nhi\n```");
+  });
+
+  it("appends a code run's output after a given-back send", () => {
+    render(<Composer {...composerProps()} />);
+    act(() =>
+      useChatStore.setState({
+        failedSendDraft: { conversationId: "conv_test", text: "resend me", files: [] },
+      }),
+    );
+    act(() => useChatStore.getState().addComposerText("```text\nhi\n```"));
+    expect(textarea()).toHaveValue("resend me\n\n```text\nhi\n```");
   });
 
   it("empties the composer when a restored failed send turns out delivered", () => {

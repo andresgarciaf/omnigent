@@ -2842,16 +2842,6 @@ function ComposerImpl(
     // setMentionedItems is a stable useState setter (from useMentionBrowser).
   }, [pendingComposerAttachments, setMentionedItems]);
 
-  useEffect(() => {
-    if (pendingComposerText.length === 0) return;
-    const text = pendingComposerText.join("\n\n");
-    editText(null, (current) => (current.trim() ? `${current.trimEnd()}\n\n${text}` : text));
-    textareaRef.current = tailTextareaRef.current;
-    dirtyRef.current = true;
-    useChatStore.getState().clearPendingComposerText();
-    textareaRef.current?.focus();
-  }, [pendingComposerText, editText]);
-
   // Restore the text (and attachments) of a send that failed, so the user can
   // fix and resend instead of retyping. The composer is empty in the normal
   // case — `submit` clears it optimistically — so only fill it when the user
@@ -2938,6 +2928,18 @@ function ComposerImpl(
     dirtyRef.current = false;
     if (conversationId) setSessionDraft(conversationId, { text: "", files: [] });
   }, [restoredSendDraft, conversationId, settledConversationId, replaceText, draft]);
+
+  // Declared after the send-restore effects so text arriving in the same
+  // render stacks on top of whatever they restore instead of being replaced.
+  useEffect(() => {
+    if (pendingComposerText.length === 0) return;
+    const text = pendingComposerText.join("\n\n");
+    editText(null, (current) => (current.trim() ? `${current.trimEnd()}\n\n${text}` : text));
+    textareaRef.current = tailTextareaRef.current;
+    dirtyRef.current = true;
+    useChatStore.getState().clearPendingComposerText();
+    textareaRef.current?.focus();
+  }, [pendingComposerText, editText]);
 
   /**
    * Execute a slash command by name + optional argument string.
