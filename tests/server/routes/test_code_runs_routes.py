@@ -750,6 +750,27 @@ async def test_owner_stop_is_proxied_and_unknown_runs_return_200(
     assert runner.calls == [("POST", f"{_RUNS}/run_unknown/stop", {})]
 
 
+@pytest.mark.asyncio
+async def test_stop_after_a_handoff_reaches_the_new_runner(
+    client: httpx.AsyncClient,
+    runner: _RunnerClient,
+    policy: dict[str, Any],
+    published: list[dict[str, Any]],
+) -> None:
+    """Each call resolves the session's runner afresh, so a rebind is followed."""
+    started = await client.post(_RUNS, json=_body(), headers=_OWNER)
+    assert started.status_code == 202, started.text
+    run_id = started.json()["run_id"]
+    new_runner = _RunnerClient()
+    set_runner_router(_FakeRunnerRouter(new_runner))  # type: ignore[arg-type]
+
+    stopped = await client.post(f"{_RUNS}/{run_id}/stop", json={}, headers=_OWNER)
+
+    assert stopped.status_code == 200
+    assert new_runner.calls == [("POST", f"{_RUNS}/{run_id}/stop", {})]
+    assert [call[0] for call in runner.calls] == ["GET", "POST"]
+
+
 # ── Snapshot on subscribe ─────────────────────────────────────────
 
 
