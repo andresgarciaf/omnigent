@@ -4062,6 +4062,24 @@ describe("Composer reply quotes", () => {
     expect(textarea()).toHaveValue("resend me\n\n```text\nhi\n```");
   });
 
+  // The composer's own text wins over a later given-back send, which is dropped
+  // (upstream's restore policy); queued output counts the same as typed text.
+  it.each([
+    ["typed text", () => fireEvent.change(textarea(), { target: { value: "mine" } })],
+    ["a code run's output", () => useChatStore.getState().addComposerText("mine")],
+  ])("treats %s the same when a given-back send arrives later", (_label, fill) => {
+    render(<Composer {...composerProps()} />);
+    act(fill);
+    act(() =>
+      useChatStore.setState({
+        failedSendDraft: { conversationId: "conv_test", text: "resend me", files: [] },
+      }),
+    );
+    expect(textarea()).toHaveValue("mine");
+    expect(useChatStore.getState().failedSendDraft).toBeNull();
+    expect(useChatStore.getState().pendingRetryStableId).toBeNull();
+  });
+
   it("appends a code run's output after a given-back send", () => {
     render(<Composer {...composerProps()} />);
     act(() =>
