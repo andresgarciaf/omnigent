@@ -148,6 +148,31 @@ describe("Run button", () => {
 });
 
 describe("confirmation", () => {
+  const LAUNCHING = { sandboxStatus: { stage: "provisioning" as const, error: null } };
+
+  it("starts nothing when confirmed as the session's sandbox starts launching", async () => {
+    renderRunner();
+    fireEvent.click(runButton());
+    const dialog = await screen.findByTestId("code-run-dialog");
+    act(() => {
+      useChatStore.setState(LAUNCHING);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Run" }));
+    });
+    await act(async () => {});
+    expect(startCodeRun).not.toHaveBeenCalled();
+  });
+
+  it("closes when the session's sandbox starts launching", async () => {
+    renderRunner();
+    fireEvent.click(runButton());
+    await screen.findByTestId("code-run-dialog");
+    act(() => useChatStore.setState(LAUNCHING));
+    await waitFor(() => expect(screen.queryByTestId("code-run-dialog")).toBeNull());
+    act(() => useChatStore.setState({ sandboxStatus: null }));
+    expect(screen.queryByTestId("code-run-dialog")).toBeNull();
+    expect(startCodeRun).not.toHaveBeenCalled();
+  });
+
   it("asks once per session with the exact command, then runs straight away", async () => {
     renderRunner();
     fireEvent.click(runButton());
@@ -242,6 +267,22 @@ describe("confirmation", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Run" }));
     await waitFor(() => expect(startCodeRun).toHaveBeenCalledTimes(2));
     expect(vi.mocked(startCodeRun).mock.calls[1]![1].approved).toBe(true);
+  });
+
+  it("doesn't reopen for approval once the sandbox started launching mid-request", async () => {
+    confirmCodeRuns(SESSION);
+    let reply!: (value: Awaited<ReturnType<typeof startCodeRun>>) => void;
+    vi.mocked(startCodeRun).mockReturnValueOnce(
+      new Promise((resolve) => {
+        reply = resolve;
+      }),
+    );
+    renderRunner();
+    fireEvent.click(runButton());
+    act(() => useChatStore.setState({ sandboxStatus: { stage: "provisioning", error: null } }));
+    await act(async () => reply({ ok: false, code: "needs_approval", reason: "Network access" }));
+    act(() => useChatStore.setState({ sandboxStatus: null }));
+    expect(screen.queryByTestId("code-run-dialog")).toBeNull();
   });
 
   it("shows a cancelled approval as refused on this device only", async () => {

@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -35,6 +36,7 @@ import {
   stopCodeRun,
   type CodeRunLanguage,
 } from "@/lib/codeRuns";
+import type { SandboxStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { OutputView } from "@/shell/NotebookPreview";
 import { useChatStore } from "@/store/chatStore";
@@ -366,6 +368,18 @@ function blockHashOf(code: string): string {
   return hash;
 }
 
+/** A (re)launching sandbox has no runner to run on yet, even if an old one is still bound. */
+function sandboxLaunchingIn(
+  state: { conversationId: string | null; sandboxStatus: SandboxStatus | null },
+  sessionId: string,
+): boolean {
+  return (
+    state.conversationId === sessionId &&
+    state.sandboxStatus !== null &&
+    state.sandboxStatus.stage !== "failed"
+  );
+}
+
 /**
  * Run controls for one runnable chat code block: the header Run button
  * (owner only) and the output panel under the block (anyone who can view).
@@ -401,13 +415,7 @@ export function CodeBlockRunner({
   );
   const refusal = useCodeRunStore((state) => state.sessions[sessionId]?.refusals[blockKey] ?? null);
   const copyOnWrite = useCodeRunStore((state) => state.sessions[sessionId]?.copyOnWrite ?? false);
-  // A (re)launching sandbox has no runner to run on yet, even if an old one is still bound.
-  const sandboxLaunching = useChatStore(
-    (state) =>
-      state.conversationId === sessionId &&
-      state.sandboxStatus !== null &&
-      state.sandboxStatus.stage !== "failed",
-  );
+  const sandboxLaunching = useChatStore((state) => sandboxLaunchingIn(state, sessionId));
   const command = useMemo(
     () => deriveCodeRunCommand(language, code, console),
     [language, code, console],
@@ -415,9 +423,21 @@ export function CodeBlockRunner({
   const [dialog, setDialog] = useState<{ reason: string | null } | null>(null);
   const [starting, setStarting] = useState(false);
   const [showEarlier, setShowEarlier] = useState(false);
+  const canRun =
+    !!sessionId && isOwner && session?.runnerId != null && !sandboxLaunching && !message.streaming;
+  const runnable = canRun && !copyOnWrite;
+  const runnableRef = useRef(runnable);
+  runnableRef.current = runnable;
+  // A dialog opened while the block could run closes once it no longer can.
+  useEffect(() => {
+    if (!runnable) setDialog(null);
+  }, [runnable]);
 
   const start = useCallback(
     async (approved: boolean) => {
+      // Every start goes through here; the launch state is read live so a confirm in
+      // the same tick as a launch event still starts nothing.
+      if (!runnableRef.current || sandboxLaunchingIn(useChatStore.getState(), sessionId)) return;
       const store = useCodeRunStore.getState();
       store.setRefusal(sessionId, blockKey, null);
       setStarting(true);
@@ -437,7 +457,7 @@ export function CodeBlockRunner({
             command,
           });
         } else if (result.code === "needs_approval") {
-          setDialog({ reason: result.reason });
+          if (runnableRef.current) setDialog({ reason: result.reason });
         } else {
           if (result.code === "copy_on_write") store.setCopyOnWrite(sessionId);
           store.setRefusal(sessionId, blockKey, result.reason);
@@ -484,7 +504,6 @@ export function CodeBlockRunner({
   }, []);
 
   if (!sessionId) return <>{render()}</>;
-  const canRun = isOwner && session?.runnerId != null && !sandboxLaunching && !message.streaming;
   const latest = refusal === null ? runIds[0] : undefined;
   const earlier = refusal === null ? runIds.slice(1) : runIds;
   const runnerOnline = session?.runnerOnline !== false;
@@ -559,7 +578,7 @@ export function CodeBlockRunner({
           )}
         </div>
       )}
-      {dialog !== null && (
+      {dialog !== null && runnable && (
         <CodeRunDialog
           open
           code={code}
