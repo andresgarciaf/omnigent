@@ -983,7 +983,7 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
     # The relaunched forwarder stores Codex's echo of either executor's notice
     # without it, so the saved user message stays as typed.
     resent_notice = codex_framework_notice_text("Run of a bash block: failed.", executor_dir)
-    echo = {
+    echo: dict[str, object] = {
         "type": "userMessage",
         "content": [
             {"type": "text", "text": "why?"},

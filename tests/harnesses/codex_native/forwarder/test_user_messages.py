@@ -106,7 +106,10 @@ async def _stored_echo(tmp_path: Path, typed: str, notice: str) -> list[dict[str
     token = fwd._dead_letter_dir.set(tmp_path)
     try:
         await fwd._post_user_message(
-            client, "conv_x", {"turnId": "t1"}, {"type": "userMessage", "content": sent}
+            client,  # type: ignore[arg-type]
+            "conv_x",
+            {"turnId": "t1"},
+            {"type": "userMessage", "content": sent},
         )
     finally:
         fwd._dead_letter_dir.reset(token)

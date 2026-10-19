@@ -3211,7 +3211,9 @@ def test_text_notice_is_sent_as_a_tagged_text_item_after_the_user_text(tmp_path:
     second = _content_to_input_items(content, tmp_path)
     assert first[0] == {"type": "text", "text": "why?"}
     assert first[1]["type"] == "text"
-    assert first[1]["text"].startswith("<omnigent-framework-notice id=")
-    assert "run summary" in first[1]["text"]
+    notice = first[1]["text"]
+    assert isinstance(notice, str)
+    assert notice.startswith("<omnigent-framework-notice id=")
+    assert "run summary" in notice
     # Each sent notice carries its own nonce.
     assert first[1]["text"] != second[1]["text"]
