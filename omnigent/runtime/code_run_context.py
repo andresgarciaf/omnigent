@@ -48,6 +48,9 @@ def code_run_notice(
     """
     # Known gap: a native message is stored only once the harness echoes it, so
     # a second native message sent before that echo reports the same runs again.
+    # A message claude-native holds until a pending prompt is answered keeps the
+    # notice built at forward time, so a run finishing during the hold is never
+    # reported; the runner's pending-prompt buffer behaves the same way.
     previous_user_index = -1
     started: dict[str, Mapping[str, object]] = {}
     finished: dict[str, tuple[int, Mapping[str, object]]] = {}
