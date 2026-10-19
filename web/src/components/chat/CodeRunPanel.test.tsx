@@ -89,7 +89,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   useCodeRunStore.setState({ sessions: {} });
-  useChatStore.setState({ pendingComposerText: [] });
+  useChatStore.setState({ pendingComposerText: [], conversationId: SESSION, sandboxStatus: null });
   setSession();
   vi.mocked(useIsOwner).mockReturnValue(true);
   vi.mocked(useCanEdit).mockReturnValue(true);
@@ -112,10 +112,20 @@ describe("Run button", () => {
   it.each([
     ["a viewer", () => vi.mocked(useIsOwner).mockReturnValue(false)],
     ["a session without a runner", () => setSession({ runnerId: null })],
+    [
+      "a session whose sandbox is relaunching",
+      () => useChatStore.setState({ sandboxStatus: { stage: "provisioning", error: null } }),
+    ],
   ])("is hidden for %s", (_label, arrange) => {
     arrange();
     renderRunner();
     expect(screen.queryByTestId("code-run-button")).toBeNull();
+  });
+
+  it("shows again once the sandbox launch failed or ended", () => {
+    useChatStore.setState({ sandboxStatus: { stage: "failed", error: "spend limit reached" } });
+    renderRunner();
+    expect(runButton()).toBeEnabled();
   });
 
   it("is hidden while the message is still streaming", () => {

@@ -401,6 +401,13 @@ export function CodeBlockRunner({
   );
   const refusal = useCodeRunStore((state) => state.sessions[sessionId]?.refusals[blockKey] ?? null);
   const copyOnWrite = useCodeRunStore((state) => state.sessions[sessionId]?.copyOnWrite ?? false);
+  // A (re)launching sandbox has no runner to run on yet, even if an old one is still bound.
+  const sandboxLaunching = useChatStore(
+    (state) =>
+      state.conversationId === sessionId &&
+      state.sandboxStatus !== null &&
+      state.sandboxStatus.stage !== "failed",
+  );
   const command = useMemo(
     () => deriveCodeRunCommand(language, code, console),
     [language, code, console],
@@ -477,7 +484,7 @@ export function CodeBlockRunner({
   }, []);
 
   if (!sessionId) return <>{render()}</>;
-  const canRun = isOwner && session?.runnerId != null && !message.streaming;
+  const canRun = isOwner && session?.runnerId != null && !sandboxLaunching && !message.streaming;
   const latest = refusal === null ? runIds[0] : undefined;
   const earlier = refusal === null ? runIds.slice(1) : runIds;
   const runnerOnline = session?.runnerOnline !== false;
